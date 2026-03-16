@@ -488,6 +488,27 @@ function passesQualityFilter(v: ParsedVariant, config: FilterConfig): { passes: 
   // Don't filter on AF=0 (might not be present)
   if (af > 0 && af < config.min_af) reasons.push(`AF=${af}<${config.min_af}`);
 
+  // Population allele frequency filtering (germline only)
+  // Check gnomAD/ExAC/1000G population AF fields — exclude common polymorphisms
+  if (config.max_population_af < 1) {
+    const popAfKeys = [
+      "gnomAD_AF", "gnomADg_AF", "gnomADe_AF", "AF_popmax", "gnomAD_AF_popmax",
+      "ExAC_AF", "1000g2015aug_all", "ESP6500siv2_ALL",
+      // VEP CSQ sub-fields sometimes appear as INFO
+      "MAX_AF", "gnomADg_AF_NFE", "gnomADe_AF_NFE",
+    ];
+    for (const key of popAfKeys) {
+      const val = v.info[key];
+      if (val && val !== "." && val !== "") {
+        const popAf = parseFloat(val);
+        if (!isNaN(popAf) && popAf > config.max_population_af) {
+          reasons.push(`POP_AF(${key})=${popAf}>${config.max_population_af}`);
+          break; // One population AF filter is enough
+        }
+      }
+    }
+  }
+
   return { passes: reasons.length === 0, reasons };
 }
 
@@ -509,71 +530,96 @@ async function queryClinVar(
   assembly: string,
 ): Promise<ClinVarResult | null> {
   try {
-    // Use NCBI Variation Services for exact allele matching
-    const assemblyTag = assembly === "GRCh38" ? "GCF_000001405.40" : "GCF_000001405.25";
     const normalizedChrom = chrom.replace("chr", "");
-    
-    // Try spdi format first: NC_XXXXXX.XX:pos:ref:alt
-    const spdiUrl = `https://api.ncbi.nlm.nih.gov/variation/v0/spdi/${normalizedChrom}:${pos}:${ref}:${alt}/clinvar?assembly=${assembly === "GRCh38" ? "GRCh38" : "GRCh37"}`;
-    
-    let clinvarData: any = null;
-    
-    // Fallback to esearch with exact variant specification
+
+    // === Attempt 1: NCBI Variation Services SPDI endpoint (exact allele match) ===
+    // Map chromosome to RefSeq accession
+    const chromAccessions38: Record<string, string> = {
+      "1": "NC_000001.11", "2": "NC_000002.12", "3": "NC_000003.12", "4": "NC_000004.12",
+      "5": "NC_000005.10", "6": "NC_000006.12", "7": "NC_000007.14", "8": "NC_000008.11",
+      "9": "NC_000009.12", "10": "NC_000010.11", "11": "NC_000011.10", "12": "NC_000012.12",
+      "13": "NC_000013.11", "14": "NC_000014.9", "15": "NC_000015.10", "16": "NC_000016.10",
+      "17": "NC_000017.11", "18": "NC_000018.10", "19": "NC_000019.10", "20": "NC_000020.11",
+      "21": "NC_000021.9", "22": "NC_000022.11", "X": "NC_000023.11", "Y": "NC_000024.10",
+    };
+    const chromAccessions37: Record<string, string> = {
+      "1": "NC_000001.10", "2": "NC_000002.11", "3": "NC_000003.11", "4": "NC_000004.11",
+      "5": "NC_000005.9", "6": "NC_000006.11", "7": "NC_000007.13", "8": "NC_000008.10",
+      "9": "NC_000009.11", "10": "NC_000010.10", "11": "NC_000011.9", "12": "NC_000012.11",
+      "13": "NC_000013.10", "14": "NC_000014.8", "15": "NC_000015.9", "16": "NC_000016.9",
+      "17": "NC_000017.10", "18": "NC_000018.9", "19": "NC_000019.9", "20": "NC_000020.10",
+      "21": "NC_000021.8", "22": "NC_000022.10", "X": "NC_000023.10", "Y": "NC_000024.9",
+    };
+    const accMap = assembly === "GRCh38" ? chromAccessions38 : chromAccessions37;
+    const accession = accMap[normalizedChrom];
+
+    if (accession) {
+      try {
+        // SPDI format: sequence:position:deleted_sequence:inserted_sequence (0-based position)
+        const spdiPos = pos - 1; // Convert 1-based VCF to 0-based SPDI
+        const spdiUrl = `https://api.ncbi.nlm.nih.gov/variation/v0/spdi/${accession}:${spdiPos}:${ref}:${alt}/clinvar`;
+        const spdiResp = await fetch(spdiUrl, { signal: AbortSignal.timeout(5000) });
+        
+        if (spdiResp.ok) {
+          const spdiData = await spdiResp.json();
+          if (spdiData?.data?.clinical_significances?.length > 0) {
+            const cs = spdiData.data.clinical_significances[0];
+            return {
+              significance: String(cs.description || cs.clinical_significance || "").toLowerCase().replace(/\s+/g, "_"),
+              review_status: String(cs.review_status || "no_review"),
+              variation_id: String(spdiData.data.variation_id || spdiData.data.rcv?.[0]?.accession || ""),
+              conditions: (spdiData.data.rcv || []).map((r: any) => r.title || r.trait_name || "").filter(Boolean),
+            };
+          }
+        }
+      } catch (_spdiErr) {
+        // SPDI failed — fall through to esearch
+      }
+    }
+
+    // === Attempt 2: Fallback to E-utilities esearch/esummary ===
     const searchTerm = `${normalizedChrom}[Chromosome] AND ${pos}[Base Position for Assembly ${assembly === "GRCh38" ? "GRCh38" : "GRCh37"}]`;
     const esearchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=clinvar&term=${encodeURIComponent(searchTerm)}&retmode=json&retmax=10`;
 
-    const searchResp = await fetch(esearchUrl);
+    const searchResp = await fetch(esearchUrl, { signal: AbortSignal.timeout(8000) });
     if (!searchResp.ok) return null;
     const searchData = await searchResp.json();
 
     const ids: string[] = searchData?.esearchresult?.idlist || [];
     if (ids.length === 0) return null;
 
-    // Fetch summaries
     const esummaryUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=clinvar&id=${ids.join(",")}&retmode=json`;
-    const summaryResp = await fetch(esummaryUrl);
+    const summaryResp = await fetch(esummaryUrl, { signal: AbortSignal.timeout(8000) });
     if (!summaryResp.ok) return null;
     const summaryData = await summaryResp.json();
 
     const results = summaryData?.result;
     if (!results) return null;
 
-    // Match by checking variant_set for exact ref/alt match
     for (const uid of ids) {
       const entry = results[uid];
       if (!entry) continue;
 
-      // Check if the variant matches our ref/alt
+      // Check exact allele match via variation_set
       const varSet = entry.variation_set;
       let isExactMatch = false;
-      
       if (varSet && Array.isArray(varSet)) {
         for (const vs of varSet) {
-          const alleles = vs.variant_alleles;
-          if (alleles) {
-            // Check if ref and alt match
-            const entryRef = vs.ref_allele || "";
-            const entryAlt = vs.alt_allele || "";
-            if (entryRef === ref && entryAlt === alt) {
-              isExactMatch = true;
-              break;
-            }
+          if (vs.ref_allele === ref && vs.alt_allele === alt) {
+            isExactMatch = true;
+            break;
           }
         }
       }
-      
-      // Also accept if there's only one result at this position (likely match)
+      // Accept single result at position as likely match
       if (!isExactMatch && ids.length > 1) continue;
 
-      // Extract clinical significance
-      const significance = entry.clinical_significance?.description || 
+      const significance = entry.clinical_significance?.description ||
                           entry.germline_classification?.description ||
                           (typeof entry.clinical_significance === "string" ? entry.clinical_significance : null);
       if (!significance) continue;
 
-      const reviewStatus = entry.clinical_significance?.review_status ||
-                          entry.review_status || "no_review";
-      
+      const reviewStatus = entry.clinical_significance?.review_status || entry.review_status || "no_review";
       const conditions: string[] = [];
       if (entry.trait_set) {
         for (const trait of (Array.isArray(entry.trait_set) ? entry.trait_set : [entry.trait_set])) {
@@ -1528,7 +1574,7 @@ Deno.serve(async (req) => {
     }
     await logStep(supabase, jobId, "therapy_matching", "completed", { options_found: therapyInserts.length });
 
-    // ===== STEP 8: BIOMARKERS =====
+    // ===== STEP 9: BIOMARKERS =====
     await logStep(supabase, jobId, "biomarker_extraction", "started");
     const biomarkers = extractBiomarkers(classifiedVariants, qc);
     // Store biomarkers
@@ -1552,7 +1598,7 @@ Deno.serve(async (req) => {
       not_assessed: biomarkers.filter(b => b.status === "not_assessed").length,
     });
 
-    // ===== STEP 9: INTERPRETATION =====
+    // ===== STEP 10: INTERPRETATION =====
     await logStep(supabase, jobId, "interpretation", "started");
     const molecularSummary = generateMolecularSummary(qc, classifiedVariants, biomarkers, caseData.sample_type);
 
