@@ -1350,7 +1350,6 @@ Deno.serve(async (req) => {
 
           classifiedVariants.push({ gene, tier: classification.tier, classification, variantId });
         }
-        }
       }
 
       // BATCH INSERT annotations and classifications
