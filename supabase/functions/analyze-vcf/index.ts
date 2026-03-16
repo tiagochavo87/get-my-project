@@ -663,6 +663,121 @@ async function batchClinVarLookup(
   return results;
 }
 
+// ============================================================
+// gnomAD POPULATION AF LOOKUP — GraphQL API (public, no key)
+// ============================================================
+interface GnomadResult {
+  af: number | null;
+  af_popmax: number | null;
+  homozygote_count: number | null;
+  source: string; // "gnomad_v4" | "gnomad_v2"
+}
+
+async function queryGnomAD(
+  chrom: string,
+  pos: number,
+  ref: string,
+  alt: string,
+  assembly: string,
+): Promise<GnomadResult | null> {
+  try {
+    const normalizedChrom = chrom.replace("chr", "");
+    // gnomAD v4 uses GRCh38, v2 uses GRCh37
+    const dataset = assembly === "GRCh38" ? "gnomad_r4" : "gnomad_r2_1";
+    const variantId = `${normalizedChrom}-${pos}-${ref}-${alt}`;
+
+    const query = `{
+      variant(variantId: "${variantId}", dataset: ${dataset}) {
+        variant_id
+        exome {
+          ac
+          an
+          homozygote_count
+          populations {
+            id
+            ac
+            an
+          }
+        }
+        genome {
+          ac
+          an
+          homozygote_count
+          populations {
+            id
+            ac
+            an
+          }
+        }
+      }
+    }`;
+
+    const resp = await fetch("https://gnomad.broadinstitute.org/api", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query }),
+      signal: AbortSignal.timeout(8000),
+    });
+
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const variant = data?.data?.variant;
+    if (!variant) return null;
+
+    // Compute overall AF from exome + genome
+    let totalAc = 0, totalAn = 0, totalHom = 0;
+    let popmaxAf = 0;
+
+    for (const src of [variant.exome, variant.genome]) {
+      if (!src) continue;
+      totalAc += src.ac || 0;
+      totalAn += src.an || 0;
+      totalHom += src.homozygote_count || 0;
+
+      // Compute popmax AF (highest AF across populations, excluding bottleneck pops)
+      const excludePops = new Set(["oth", "ami", "mid", "remaining"]);
+      for (const pop of (src.populations || [])) {
+        if (excludePops.has(pop.id) || pop.an === 0) continue;
+        const popAf = pop.ac / pop.an;
+        if (popAf > popmaxAf) popmaxAf = popAf;
+      }
+    }
+
+    const af = totalAn > 0 ? totalAc / totalAn : null;
+
+    return {
+      af,
+      af_popmax: popmaxAf > 0 ? popmaxAf : af,
+      homozygote_count: totalHom,
+      source: assembly === "GRCh38" ? "gnomad_v4" : "gnomad_v2",
+    };
+  } catch (e) {
+    console.warn("gnomAD lookup failed:", e);
+    return null;
+  }
+}
+
+// Batch gnomAD lookups with rate limiting
+async function batchGnomADLookup(
+  variants: Array<{ chrom: string; pos: number; ref: string; alt: string; index: number }>,
+  assembly: string,
+): Promise<Map<number, GnomadResult>> {
+  const results = new Map<number, GnomadResult>();
+  const BATCH_DELAY = 200; // gnomAD GraphQL is generous but be polite
+
+  for (let i = 0; i < variants.length; i++) {
+    const v = variants[i];
+    const result = await queryGnomAD(v.chrom, v.pos, v.ref, v.alt, assembly);
+    if (result) {
+      results.set(v.index, result);
+    }
+    if (i < variants.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, BATCH_DELAY));
+    }
+  }
+  return results;
+}
+
 // Map ClinVar significance to our classification system
 function mapClinVarSignificance(clinvarSig: string): {
   classification: string;
