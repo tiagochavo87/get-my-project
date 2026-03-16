@@ -367,6 +367,7 @@ function classifyVariant(
   gene: string | null,
   geneRef: GeneRef | null,
   contextType: string,
+  assembly: string,
 ) {
   const af = parseFloat(v.info["AF"] || v.sample_data["AF"] || "0");
   const dp = parseInt(v.info["DP"] || v.sample_data["DP"] || "0");
