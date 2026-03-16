@@ -390,14 +390,17 @@ function extractFullAnnotation(v: ParsedVariant, geneRefs: GeneRef[]): Extracted
     return result;
   }
 
-  // Direct INFO fields
+  // Manual entry or direct INFO fields
+  if (v.info["MANUAL_ENTRY"]) {
+    result.annotation_source = "manual_entry";
+  }
   for (const key of ["GENE", "Gene", "gene", "SYMBOL"]) {
-    if (v.info[key]) { result.gene = v.info[key]; result.annotation_source = "vcf_info_field"; break; }
+    if (v.info[key]) { result.gene = v.info[key]; if (result.annotation_source === "none") result.annotation_source = "vcf_info_field"; break; }
   }
   if (v.info["EFFECT"]) result.consequence = v.info["EFFECT"];
   if (v.info["IMPACT"]) result.predicted_effect = v.info["IMPACT"];
-  if (v.info["HGVS_C"] || v.info["HGVSc"]) result.hgvs_c = v.info["HGVS_C"] || v.info["HGVSc"];
-  if (v.info["HGVS_P"] || v.info["HGVSp"]) result.hgvs_p = v.info["HGVS_P"] || v.info["HGVSp"];
+  if (v.info["HGVS_C"] || v.info["HGVSc"] || v.info["HGVSC"]) result.hgvs_c = v.info["HGVS_C"] || v.info["HGVSc"] || v.info["HGVSC"];
+  if (v.info["HGVS_P"] || v.info["HGVSp"] || v.info["HGVSP"]) result.hgvs_p = v.info["HGVS_P"] || v.info["HGVSp"] || v.info["HGVSP"];
   if (v.info["Feature"] || v.info["TRANSCRIPT"]) result.transcript = v.info["Feature"] || v.info["TRANSCRIPT"];
 
   // Positional lookup fallback
@@ -1406,7 +1409,7 @@ Deno.serve(async (req) => {
     }
     const userId = claimsData.claims.sub as string;
 
-    const { case_id } = await req.json();
+    const { case_id, manual_variants, sv_file_path } = await req.json();
     if (!case_id) {
       return new Response(JSON.stringify({ error: "case_id required" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
@@ -1455,70 +1458,117 @@ Deno.serve(async (req) => {
       assembly: caseData.assembly,
     }).select().single();
 
-    // ===== STEP 1: DOWNLOAD =====
-    await logStep(supabase, jobId, "downloading", "started");
-    const { data: fileData, error: dlErr } = await supabase.storage.from("vcf-files").download(caseData.file_path);
-    if (dlErr || !fileData) {
-      await logStep(supabase, jobId, "downloading", "failed", { error: "Failed to download VCF file" });
-      await supabase.from("analysis_jobs").update({ status: "failed", error_message: "Failed to download VCF file", completed_at: new Date().toISOString() }).eq("id", jobId);
-      await supabase.from("cases").update({ status: "failed" }).eq("id", case_id);
-      return new Response(JSON.stringify({ error: "Failed to download VCF" }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-    }
-    await logStep(supabase, jobId, "downloading", "completed");
+    let parsed: VcfParseResult;
+    const isManualEntry = Array.isArray(manual_variants) && manual_variants.length > 0;
 
-    // ===== STEP 2: DECOMPRESS =====
-    await logStep(supabase, jobId, "decompressing", "started");
-    let vcfContent: string;
-    if (caseData.file_name.endsWith(".gz")) {
-      const ds = new DecompressionStream("gzip");
-      const decompressed = fileData.stream().pipeThrough(ds);
-      vcfContent = await new Response(decompressed).text();
+    if (isManualEntry) {
+      // ===== MANUAL ENTRY MODE =====
+      await logStep(supabase, jobId, "manual_entry", "started", { variant_count: manual_variants.length });
+
+      // Convert manual variants to ParsedVariant format
+      const manualParsed: ParsedVariant[] = manual_variants.map((mv: any) => ({
+        chrom: (mv.chrom || "").replace("chr", ""),
+        pos: parseInt(mv.pos),
+        id_field: ".",
+        ref: mv.ref || "",
+        alt: mv.alt || "",
+        qual: null,
+        filter: "MANUAL",
+        info: {
+          ...(mv.gene ? { GENE: mv.gene } : {}),
+          ...(mv.hgvs_c ? { HGVSC: mv.hgvs_c } : {}),
+          ...(mv.hgvs_p ? { HGVSP: mv.hgvs_p } : {}),
+          MANUAL_ENTRY: "true",
+        },
+        format_fields: [],
+        sample_data: {},
+      }));
+
+      parsed = {
+        headerLines: ["##fileformat=VCFv4.2", "##source=manual_entry"],
+        variants: manualParsed,
+        sampleNames: [],
+        assemblyDetected: caseData.assembly,
+        infoFields: ["GENE", "MANUAL_ENTRY"],
+        formatFields: [],
+        vcfVersion: "VCFv4.2",
+        isGvcf: false,
+        gvcfRefBlocksSkipped: 0,
+        isValid: true,
+        validationErrors: [],
+      };
+
+      await logStep(supabase, jobId, "manual_entry", "completed", {
+        total_variants: manualParsed.length,
+        mode: "manual_entry",
+      });
     } else {
-      vcfContent = await fileData.text();
-    }
-    await logStep(supabase, jobId, "decompressing", "completed", { content_length: vcfContent.length });
+      // ===== VCF FILE MODE =====
+      // STEP 1: DOWNLOAD
+      await logStep(supabase, jobId, "downloading", "started");
+      const { data: fileData, error: dlErr } = await supabase.storage.from("vcf-files").download(caseData.file_path);
+      if (dlErr || !fileData) {
+        await logStep(supabase, jobId, "downloading", "failed", { error: "Failed to download VCF file" });
+        await supabase.from("analysis_jobs").update({ status: "failed", error_message: "Failed to download VCF file", completed_at: new Date().toISOString() }).eq("id", jobId);
+        await supabase.from("cases").update({ status: "failed" }).eq("id", case_id);
+        return new Response(JSON.stringify({ error: "Failed to download VCF" }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+      await logStep(supabase, jobId, "downloading", "completed");
 
-    // Record uploaded file metadata
-    await supabase.from("uploaded_files").insert({
-      case_id,
-      sample_id: sample?.id || null,
-      user_id: userId,
-      filename: caseData.file_name,
-      storage_path: caseData.file_path,
-      file_type: caseData.file_name.endsWith(".gz") ? "vcf.gz" : "vcf",
-      file_size: caseData.file_size,
-      upload_status: "validated",
-    });
+      // STEP 2: DECOMPRESS
+      await logStep(supabase, jobId, "decompressing", "started");
+      let vcfContent: string;
+      if (caseData.file_name.endsWith(".gz")) {
+        const ds = new DecompressionStream("gzip");
+        const decompressed = fileData.stream().pipeThrough(ds);
+        vcfContent = await new Response(decompressed).text();
+      } else {
+        vcfContent = await fileData.text();
+      }
+      await logStep(supabase, jobId, "decompressing", "completed", { content_length: vcfContent.length });
 
-    // ===== STEP 3: VALIDATION & PARSING =====
-    await logStep(supabase, jobId, "validating", "started");
-    const parsed = parseVcfContent(vcfContent);
+      // Record uploaded file metadata
+      await supabase.from("uploaded_files").insert({
+        case_id,
+        sample_id: sample?.id || null,
+        user_id: userId,
+        filename: caseData.file_name,
+        storage_path: caseData.file_path,
+        file_type: caseData.file_name.endsWith(".gz") ? "vcf.gz" : "vcf",
+        file_size: caseData.file_size,
+        upload_status: "validated",
+      });
 
-    if (!parsed.isValid) {
-      await logStep(supabase, jobId, "validating", "failed", { errors: parsed.validationErrors });
-      await supabase.from("analysis_jobs").update({
-        status: "failed",
-        error_message: `VCF validation failed: ${parsed.validationErrors.join("; ")}`,
-        completed_at: new Date().toISOString(),
-      }).eq("id", jobId);
-      await supabase.from("cases").update({ status: "failed" }).eq("id", case_id);
-      return new Response(JSON.stringify({ error: "VCF validation failed", details: parsed.validationErrors }), {
-        status: 422, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      // STEP 3: VALIDATION & PARSING
+      await logStep(supabase, jobId, "validating", "started");
+      parsed = parseVcfContent(vcfContent);
+
+      if (!parsed.isValid) {
+        await logStep(supabase, jobId, "validating", "failed", { errors: parsed.validationErrors });
+        await supabase.from("analysis_jobs").update({
+          status: "failed",
+          error_message: `VCF validation failed: ${parsed.validationErrors.join("; ")}`,
+          completed_at: new Date().toISOString(),
+        }).eq("id", jobId);
+        await supabase.from("cases").update({ status: "failed" }).eq("id", case_id);
+        return new Response(JSON.stringify({ error: "VCF validation failed", details: parsed.validationErrors }), {
+          status: 422, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      if (parsed.variants.length === 0) {
+        await logStep(supabase, jobId, "validating", "failed", { error: "No variants" });
+        await supabase.from("analysis_jobs").update({ status: "failed", error_message: "No variants found in VCF", completed_at: new Date().toISOString() }).eq("id", jobId);
+        await supabase.from("cases").update({ status: "failed" }).eq("id", case_id);
+        return new Response(JSON.stringify({ error: "No variants found in VCF file" }), { status: 422, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+      await logStep(supabase, jobId, "validating", "completed", {
+        total_variants: parsed.variants.length,
+        samples: parsed.sampleNames,
+        assembly_detected: parsed.assemblyDetected,
+        vcf_version: parsed.vcfVersion,
       });
     }
-
-    if (parsed.variants.length === 0) {
-      await logStep(supabase, jobId, "validating", "failed", { error: "No variants" });
-      await supabase.from("analysis_jobs").update({ status: "failed", error_message: "No variants found in VCF", completed_at: new Date().toISOString() }).eq("id", jobId);
-      await supabase.from("cases").update({ status: "failed" }).eq("id", case_id);
-      return new Response(JSON.stringify({ error: "No variants found in VCF file" }), { status: 422, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-    }
-    await logStep(supabase, jobId, "validating", "completed", {
-      total_variants: parsed.variants.length,
-      samples: parsed.sampleNames,
-      assembly_detected: parsed.assemblyDetected,
-      vcf_version: parsed.vcfVersion,
-    });
 
     // ===== STEP 4: QC =====
     await logStep(supabase, jobId, "quality_control", "started");
