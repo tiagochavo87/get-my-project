@@ -1933,7 +1933,7 @@ Deno.serve(async (req) => {
       not_assessed: biomarkers.filter(b => b.status === "not_assessed").length,
     });
 
-    // ===== STEP 10: INTERPRETATION =====
+    // ===== STEP 12: INTERPRETATION =====
     await logStep(supabase, jobId, "interpretation", "started");
     const molecularSummary = generateMolecularSummary(qc, classifiedVariants, biomarkers, caseData.sample_type);
 
