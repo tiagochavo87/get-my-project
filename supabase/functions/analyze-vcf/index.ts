@@ -1225,13 +1225,18 @@ Deno.serve(async (req) => {
     };
 
     const limitations: string[] = [...qc.warnings];
+    if (timeoutReached) {
+      limitations.push(`Processing time limit reached — only ${processedCount} of ${variantsToProcess.length} variants were analyzed. Clinically relevant variants in unprocessed regions may be missed.`);
+      flags.manual_review_required = true;
+    }
+    if (wasLimited) {
+      limitations.push(`VCF contains ${parsed.variants.length} variants. Only the first ${MAX_VARIANTS} were processed. Consider filtering the VCF before upload.`);
+      flags.manual_review_required = true;
+    }
     if (!caseData.riss_stage) limitations.push("R-ISS stage not provided — risk stratification incomplete.");
     if (caseData.sample_type === "somatic_tumor") limitations.push("Germline filtering not performed (somatic-only sample).");
     if (caseData.sample_type === "tumor_normal_paired") limitations.push("Tumor-normal paired analysis requires validated somatic caller output.");
     limitations.push("Gene annotation is based on positional lookup and VCF INFO fields. External annotation (VEP/ClinVar) not yet integrated.");
-    // TODO: Integrate ClinVar API for variant-level evidence
-    // TODO: Integrate COSMIC for mutation frequency in MM
-    // TODO: Integrate gnomAD for population frequency filtering
 
     const manualReviewReasons: string[] = [];
     if (flags.manual_review_required) manualReviewReasons.push("One or more variants require manual curation review.");
