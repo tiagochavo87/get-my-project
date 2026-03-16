@@ -396,8 +396,8 @@ function extractFullAnnotation(v: ParsedVariant, geneRefs: GeneRef[]): Extracted
   }
   if (v.info["EFFECT"]) result.consequence = v.info["EFFECT"];
   if (v.info["IMPACT"]) result.predicted_effect = v.info["IMPACT"];
-  if (v.info["HGVS_C"] || v.info["HGVSc"]) result.hgvs_c = v.info["HGVS_C"] || v.info["HGVSc"];
-  if (v.info["HGVS_P"] || v.info["HGVSp"]) result.hgvs_p = v.info["HGVS_P"] || v.info["HGVSp"];
+  if (v.info["HGVS_C"] || v.info["HGVSc"] || v.info["HGVSC"]) result.hgvs_c = v.info["HGVS_C"] || v.info["HGVSc"] || v.info["HGVSC"];
+  if (v.info["HGVS_P"] || v.info["HGVSp"] || v.info["HGVSP"]) result.hgvs_p = v.info["HGVS_P"] || v.info["HGVSp"] || v.info["HGVSP"];
   if (v.info["Feature"] || v.info["TRANSCRIPT"]) result.transcript = v.info["Feature"] || v.info["TRANSCRIPT"];
 
   // Positional lookup fallback
