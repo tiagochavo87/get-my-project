@@ -558,6 +558,10 @@ function generateQC(parsed: VcfParseResult, expectedAssembly: string) {
     for (const err of parsed.validationErrors) warnings.push(`VCF Validation: ${err}`);
   }
 
+  if (isGvcf) {
+    warnings.push(`GVCF format detected — ${gvcfRefBlocksSkipped} reference blocks skipped, ${variants.length} true variants extracted.`);
+  }
+
   return {
     total_variants: total,
     passed_filter: passed,
