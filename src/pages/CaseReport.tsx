@@ -139,6 +139,34 @@ export default function CaseReport() {
               Download Report
             </Button>
           )}
+          {(data.status === 'failed' || data.status === 'review_required' || data.status === 'completed') && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={async () => {
+                const { supabase: sb } = await import('@/integrations/supabase/client');
+                const { data: session } = await sb.auth.getSession();
+                const res = await sb.functions.invoke('reprocess-case', {
+                  body: { case_id: id },
+                  headers: { Authorization: `Bearer ${session.session?.access_token}` },
+                });
+                if (res.error) {
+                  const { toast } = await import('sonner');
+                  toast.error('Failed to reprocess');
+                } else {
+                  const { toast } = await import('sonner');
+                  toast.success('Reprocessing started');
+                  setLoading(true);
+                  setData(null);
+                  // Re-fetch after a short delay
+                  setTimeout(() => window.location.reload(), 2000);
+                }
+              }}
+            >
+              <RefreshCw className="h-4 w-4 mr-1" />
+              Reprocess
+            </Button>
+          )}
         </div>
 
         {isPending && (
