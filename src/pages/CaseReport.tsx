@@ -359,55 +359,74 @@ export default function CaseReport() {
                       No Tier I–II variants identified from this analysis.
                     </div>
                   ) : (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-xs">
-                         <thead>
-                          <tr className="border-b bg-muted/50">
-                            <th className="text-left font-medium text-muted-foreground px-3 py-2">Gene</th>
-                            <th className="text-left font-medium text-muted-foreground px-3 py-2">Position</th>
-                            <th className="text-left font-medium text-muted-foreground px-3 py-2">Change</th>
-                            <th className="text-left font-medium text-muted-foreground px-3 py-2">Tier</th>
-                            <th className="text-left font-medium text-muted-foreground px-3 py-2 hidden md:table-cell">Classification</th>
-                            <th className="text-left font-medium text-muted-foreground px-3 py-2 hidden md:table-cell">ClinVar</th>
-                            <th className="text-left font-medium text-muted-foreground px-3 py-2 hidden md:table-cell">Confidence</th>
-                            <th className="text-left font-medium text-muted-foreground px-3 py-2 hidden lg:table-cell">Source</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {variants.map((v: any, i: number) => (
-                            <tr key={i} className="border-b last:border-0 hover:bg-muted/30">
-                              <td className="px-3 py-2.5 font-mono font-semibold">
-                                {v.gene || 'Unknown'}
-                                {v.is_hotspot && <span className="ml-1 text-[9px] text-destructive">🔥</span>}
-                                {v.requires_review && <AlertTriangle className="h-3 w-3 text-clinical-moderate-risk inline ml-1" />}
-                              </td>
-                              <td className="px-3 py-2.5 font-mono text-[11px]">chr{v.chrom}:{v.pos}</td>
-                              <td className="px-3 py-2.5 font-mono text-[11px]">{v.ref}→{v.alt}</td>
-                              <td className="px-3 py-2.5">
+                    <div className="space-y-3 p-3">
+                      {variants.map((v: any, i: number) => {
+                        const impactColor = v.consequence?.includes('frameshift') || v.consequence?.includes('stop_gained') || v.consequence?.includes('splice')
+                          ? 'destructive' : v.consequence?.includes('missense') ? 'clinical-moderate-risk' : 'muted-foreground';
+                        const impactLabel = v.consequence?.includes('frameshift') || v.consequence?.includes('stop_gained') || v.consequence?.includes('splice')
+                          ? 'HIGH' : v.consequence?.includes('missense') ? 'MODERATE' : v.consequence?.includes('synonymous') ? 'LOW' : null;
+                        return (
+                          <motion.div key={i} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.03 }}>
+                            <div className={`rounded-lg border p-4 hover:bg-muted/30 transition-colors ${v.tier === 1 ? 'border-l-4 border-l-destructive' : v.tier === 2 ? 'border-l-4 border-l-accent' : ''}`}>
+                              {/* Row 1: Gene + badges */}
+                              <div className="flex items-center gap-2 flex-wrap mb-2">
+                                <span className="font-mono font-bold text-sm">{v.gene || 'Unknown'}</span>
+                                {v.is_hotspot && <span className="text-[10px] text-destructive">🔥 Hotspot</span>}
+                                {v.requires_review && <AlertTriangle className="h-3 w-3 text-clinical-moderate-risk" />}
                                 <span className={`clinical-badge tier-badge-${v.tier}`}>Tier {v.tier}</span>
-                              </td>
-                              <td className="px-3 py-2.5 hidden md:table-cell capitalize text-muted-foreground">
-                                {v.classification?.replace(/_/g, ' ') || '—'}
-                              </td>
-                              <td className="px-3 py-2.5 hidden md:table-cell">
-                                {v.clinvar_significance ? (
+                                <span className={`clinical-badge ${v.review_status === 'approved' ? 'status-badge-completed' : v.review_status === 'rejected' ? 'status-badge-failed' : 'status-badge-pending'}`}>
+                                  {v.review_status === 'approved' ? '✓ Approved' : v.review_status === 'rejected' ? '✗ Rejected' : '⏳ Pending'}
+                                </span>
+                                {v.clinvar_significance && (
                                   <span className="clinical-badge status-badge-processing text-[10px]">
-                                    {v.clinvar_significance.replace(/_/g, ' ')}
+                                    ClinVar: {v.clinvar_significance.replace(/_/g, ' ')}
                                   </span>
-                                ) : (
-                                  <span className="text-[10px] text-muted-foreground">—</span>
                                 )}
-                              </td>
-                              <td className="px-3 py-2.5 hidden md:table-cell capitalize text-muted-foreground">
-                                {v.confidence || '—'}
-                              </td>
-                              <td className="px-3 py-2.5 hidden lg:table-cell text-[10px] text-muted-foreground font-mono">
-                                {v.annotation_source || '—'}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                                {impactLabel && (
+                                  <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${impactLabel === 'HIGH' ? 'bg-destructive/10 text-destructive' : impactLabel === 'MODERATE' ? 'bg-accent/10 text-accent-foreground' : 'bg-muted text-muted-foreground'}`}>
+                                    {impactLabel} IMPACT
+                                  </span>
+                                )}
+                              </div>
+
+                              {/* Row 2: Position + HGVS */}
+                              <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-4 text-[11px] font-mono text-muted-foreground mb-2">
+                                <span>chr{v.chrom}:{v.pos} {v.ref}→{v.alt}</span>
+                                {v.hgvs_c && <span className="text-foreground" title="HGVS coding">c: {v.hgvs_c}</span>}
+                                {v.hgvs_p && <span className="text-foreground font-semibold" title="HGVS protein">p: {v.hgvs_p}</span>}
+                              </div>
+
+                              {/* Row 3: Consequence + details */}
+                              <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-1 text-[11px]">
+                                <div>
+                                  <span className="text-muted-foreground">Consequence: </span>
+                                  <span className={`font-medium text-${impactColor}`}>{v.consequence?.replace(/_/g, ' ') || '—'}</span>
+                                </div>
+                                <div>
+                                  <span className="text-muted-foreground">Classification: </span>
+                                  <span className="capitalize">{v.classification?.replace(/_/g, ' ') || '—'}</span>
+                                </div>
+                                <div>
+                                  <span className="text-muted-foreground">AF: </span>
+                                  <span>{v.allele_frequency ? `${(v.allele_frequency * 100).toFixed(1)}%` : '—'}</span>
+                                </div>
+                                <div>
+                                  <span className="text-muted-foreground">Depth: </span>
+                                  <span>{v.read_depth ? `${v.read_depth}x` : '—'}</span>
+                                </div>
+                              </div>
+
+                              {/* Row 4: Clinical significances */}
+                              {(v.prognostic_significance || v.therapeutic_significance) && (
+                                <div className="mt-2 text-[11px] text-muted-foreground space-y-0.5 border-t border-border pt-2">
+                                  {v.prognostic_significance && <p><span className="font-medium text-foreground">Prognostic:</span> {v.prognostic_significance}</p>}
+                                  {v.therapeutic_significance && <p><span className="font-medium text-foreground">Therapeutic:</span> {v.therapeutic_significance}</p>}
+                                </div>
+                              )}
+                            </div>
+                          </motion.div>
+                        );
+                      })}
                     </div>
                   )}
                 </CardContent>
