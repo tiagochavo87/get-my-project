@@ -26,6 +26,24 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const { user, signOut } = useAuth();
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  useEffect(() => {
+    if (!user) return;
+    supabase
+      .from('user_roles' as any)
+      .select('role')
+      .eq('user_id', user.id)
+      .eq('role', 'admin')
+      .then(({ data }) => {
+        setIsAdmin(Array.isArray(data) && data.length > 0);
+      });
+  }, [user]);
+
+  const navItems = [
+    ...baseNavItems,
+    ...(isAdmin ? [{ label: 'Admin', path: '/admin', icon: Settings }] : []),
+  ];
 
   const handleSignOut = async () => {
     await signOut();
