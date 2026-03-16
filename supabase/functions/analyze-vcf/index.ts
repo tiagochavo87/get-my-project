@@ -1375,17 +1375,6 @@ Deno.serve(async (req) => {
 
     // ===== STEP 7: CLINVAR ANNOTATION =====
     await logStep(supabase, jobId, "clinvar_annotation", "started");
-    const clinvarCandidates = classifiedVariants
-      .filter(v => v.tier <= 3 && v.variantId && v.gene)
-      .map((v, idx) => {
-        // Find original variant data from processed chunks
-        const origVariant = variantsToProcess.find(pv => {
-          // Match by position - the variantId links back
-          return true; // We'll use the annotation data instead
-        });
-        return v;
-      });
-
     // Collect variant coordinates for ClinVar lookup (limit to 50 to respect rate limits + time)
     const MAX_CLINVAR_LOOKUPS = 50;
     const clinvarTargets: Array<{ chrom: string; pos: number; ref: string; alt: string; index: number; variantId: string }> = [];
