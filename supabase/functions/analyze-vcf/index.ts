@@ -1268,22 +1268,8 @@ Deno.serve(async (req) => {
 
           classifiedVariants.push({ gene, tier: classification.tier, classification, variantId });
 
-          // Therapy options (only for Tier 1-2, never for VUS)
-          if (classification.tier <= 2) {
-            const therapies = findTherapyOptions(gene, hgvs.hgvs_p, caseData.regulatory_region, classification.tier, classification.clinical_significance);
-            for (const t of therapies) {
-              therapyInserts.push({
-                case_id,
-                variant_id: variantId,
-                therapy_name: t.therapy_name,
-                evidence_level: t.evidence_level,
-                region: t.region,
-                approved_status: t.approved_status,
-                rationale_text: t.rationale,
-                contraindicated_flag: t.contraindicated_flag,
-              });
-            }
-          }
+          // Track for post-ClinVar therapy computation
+          // (Therapy matching moved to after ClinVar refinement step)
         }
       }
 
