@@ -361,13 +361,14 @@ export default function CaseReport() {
                   ) : (
                     <div className="overflow-x-auto">
                       <table className="w-full text-xs">
-                        <thead>
+                         <thead>
                           <tr className="border-b bg-muted/50">
                             <th className="text-left font-medium text-muted-foreground px-3 py-2">Gene</th>
                             <th className="text-left font-medium text-muted-foreground px-3 py-2">Position</th>
                             <th className="text-left font-medium text-muted-foreground px-3 py-2">Change</th>
                             <th className="text-left font-medium text-muted-foreground px-3 py-2">Tier</th>
                             <th className="text-left font-medium text-muted-foreground px-3 py-2 hidden md:table-cell">Classification</th>
+                            <th className="text-left font-medium text-muted-foreground px-3 py-2 hidden md:table-cell">ClinVar</th>
                             <th className="text-left font-medium text-muted-foreground px-3 py-2 hidden md:table-cell">Confidence</th>
                             <th className="text-left font-medium text-muted-foreground px-3 py-2 hidden lg:table-cell">Source</th>
                           </tr>
