@@ -1,8 +1,8 @@
-import { ReactNode, useState } from 'react';
+import { ReactNode, useState, useEffect } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { 
   LayoutDashboard, FilePlus, LogOut, Menu, X, Shield, 
-  User, ChevronDown 
+  User, ChevronDown, Settings
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -13,9 +13,10 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { useAuth } from '@/contexts/AuthContext';
+import { supabase } from '@/integrations/supabase/client';
 import logo from '@/assets/logo.jpg';
 
-const navItems = [
+const baseNavItems = [
   { label: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
   { label: 'New Case', path: '/new-case', icon: FilePlus },
 ];
