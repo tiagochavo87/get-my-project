@@ -119,7 +119,7 @@ export default function NewCase() {
     }
   };
 
-  const isFormValid = file && sampleType && assembly && diagnosis && regulatoryRegion && patientAge && patientSex;
+  const isFormValid = file && sampleType && assembly && diagnosis;
 
   return (
     <AppLayout>
