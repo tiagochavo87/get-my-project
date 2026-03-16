@@ -501,10 +501,18 @@ async function queryClinVar(
   assembly: string,
 ): Promise<ClinVarResult | null> {
   try {
-    const assemblyTag = assembly === "GRCh38" ? "GRCh38" : "GRCh37";
-    // Use NCBI variation services API for precise lookup
-    const searchTerm = `${chrom}[Chromosome] AND ${pos}[Base Position] AND ${assemblyTag}[Assembly]`;
-    const esearchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=clinvar&term=${encodeURIComponent(searchTerm)}&retmode=json&retmax=5`;
+    // Use NCBI Variation Services for exact allele matching
+    const assemblyTag = assembly === "GRCh38" ? "GCF_000001405.40" : "GCF_000001405.25";
+    const normalizedChrom = chrom.replace("chr", "");
+    
+    // Try spdi format first: NC_XXXXXX.XX:pos:ref:alt
+    const spdiUrl = `https://api.ncbi.nlm.nih.gov/variation/v0/spdi/${normalizedChrom}:${pos}:${ref}:${alt}/clinvar?assembly=${assembly === "GRCh38" ? "GRCh38" : "GRCh37"}`;
+    
+    let clinvarData: any = null;
+    
+    // Fallback to esearch with exact variant specification
+    const searchTerm = `${normalizedChrom}[Chromosome] AND ${pos}[Base Position for Assembly ${assembly === "GRCh38" ? "GRCh38" : "GRCh37"}]`;
+    const esearchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=clinvar&term=${encodeURIComponent(searchTerm)}&retmode=json&retmax=10`;
 
     const searchResp = await fetch(esearchUrl);
     if (!searchResp.ok) return null;
@@ -513,7 +521,7 @@ async function queryClinVar(
     const ids: string[] = searchData?.esearchresult?.idlist || [];
     if (ids.length === 0) return null;
 
-    // Fetch summaries for matching IDs
+    // Fetch summaries
     const esummaryUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=clinvar&id=${ids.join(",")}&retmode=json`;
     const summaryResp = await fetch(esummaryUrl);
     if (!summaryResp.ok) return null;
@@ -522,15 +530,37 @@ async function queryClinVar(
     const results = summaryData?.result;
     if (!results) return null;
 
-    // Find best match by checking variant details
+    // Match by checking variant_set for exact ref/alt match
     for (const uid of ids) {
       const entry = results[uid];
       if (!entry) continue;
 
+      // Check if the variant matches our ref/alt
+      const varSet = entry.variation_set;
+      let isExactMatch = false;
+      
+      if (varSet && Array.isArray(varSet)) {
+        for (const vs of varSet) {
+          const alleles = vs.variant_alleles;
+          if (alleles) {
+            // Check if ref and alt match
+            const entryRef = vs.ref_allele || "";
+            const entryAlt = vs.alt_allele || "";
+            if (entryRef === ref && entryAlt === alt) {
+              isExactMatch = true;
+              break;
+            }
+          }
+        }
+      }
+      
+      // Also accept if there's only one result at this position (likely match)
+      if (!isExactMatch && ids.length > 1) continue;
+
       // Extract clinical significance
       const significance = entry.clinical_significance?.description || 
                           entry.germline_classification?.description ||
-                          entry.clinical_significance || null;
+                          (typeof entry.clinical_significance === "string" ? entry.clinical_significance : null);
       if (!significance) continue;
 
       const reviewStatus = entry.clinical_significance?.review_status ||
