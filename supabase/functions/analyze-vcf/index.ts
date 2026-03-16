@@ -1643,6 +1643,116 @@ Deno.serve(async (req) => {
       skipped: unannotatedVariants.length === 0 ? "all_variants_annotated" : undefined,
     });
 
+    // ===== STEP 8: gnomAD POPULATION AF FILTERING (germline) =====
+    await logStep(supabase, jobId, "gnomad_filtering", "started");
+    let gnomadHits = 0;
+    let gnomadFiltered = 0;
+    let gnomadDowngrades = 0;
+    const MAX_GNOMAD_LOOKUPS = 80;
+
+    // Only run gnomAD for germline cases, or all cases where VCF lacks population AF fields
+    const isGermline = caseData.sample_type === "germline_constitutional";
+    const hasPopAfInVcf = parsed.infoFields.some(f =>
+      ["gnomAD_AF", "gnomADg_AF", "gnomADe_AF", "AF_popmax", "ExAC_AF", "1000g2015aug_all", "MAX_AF"].includes(f)
+    );
+
+    if ((isGermline || !hasPopAfInVcf) && (Date.now() - startTime) < TIMEOUT_MS - 20000) {
+      // Get tier 1-3 variants that need gnomAD lookup
+      const gnomadCandidates = classifiedVariants
+        .filter(v => v.variantId && v.tier <= 3)
+        .slice(0, MAX_GNOMAD_LOOKUPS);
+
+      if (gnomadCandidates.length > 0) {
+        const candidateIds = gnomadCandidates.map(v => v.variantId!);
+        const { data: gnomadCoords } = await supabase
+          .from("vcf_variants")
+          .select("id, chrom, pos, ref, alt")
+          .in("id", candidateIds);
+
+        if (gnomadCoords && gnomadCoords.length > 0) {
+          const gnomadTargets = gnomadCoords.map((vc: any, idx: number) => ({
+            chrom: vc.chrom,
+            pos: vc.pos,
+            ref: vc.ref,
+            alt: vc.alt,
+            index: idx,
+          }));
+
+          const gnomadResults = await batchGnomADLookup(gnomadTargets, caseData.assembly);
+
+          for (const [idx, gnomadResult] of gnomadResults.entries()) {
+            const vc = gnomadCoords[idx];
+            if (!vc) continue;
+            gnomadHits++;
+
+            // Store gnomAD AF in variant_annotations
+            const updateData: Record<string, any> = {};
+            if (gnomadResult.af !== null) {
+              updateData.allele_frequency = gnomadResult.af;
+            }
+            // Append gnomad to sources
+            await supabase.from("variant_annotations").update({
+              ...updateData,
+              sources: ["rule_engine", "gnomad", gnomadResult.source],
+            }).eq("variant_id", vc.id);
+
+            // For germline: filter out common polymorphisms (AF > 1%)
+            if (isGermline && gnomadResult.af_popmax !== null && gnomadResult.af_popmax > 0.01) {
+              gnomadFiltered++;
+              const cv = classifiedVariants.find(v => v.variantId === vc.id);
+              if (cv && !cv.classification.rationale_json?.is_high_risk_gene) {
+                // Downgrade to tier 4 / benign — common germline polymorphism
+                gnomadDowngrades++;
+                cv.tier = 4;
+                cv.classification.clinical_significance = "benign";
+                cv.classification.confidence = "high";
+                cv.classification.requires_manual_review = false;
+
+                await supabase.from("variant_classifications").update({
+                  tier: 4,
+                  clinical_significance: "benign",
+                  confidence: "high",
+                  requires_manual_review: false,
+                  rationale_json: {
+                    ...cv.classification.rationale_json,
+                    gnomad_af: gnomadResult.af,
+                    gnomad_af_popmax: gnomadResult.af_popmax,
+                    gnomad_source: gnomadResult.source,
+                    gnomad_filtered: true,
+                    gnomad_filter_reason: `Population AF (popmax=${gnomadResult.af_popmax?.toFixed(4)}) exceeds 1% threshold for germline analysis`,
+                  },
+                }).eq("variant_id", vc.id);
+              }
+            } else {
+              // Not filtered — still store gnomAD data in rationale for context
+              const cv = classifiedVariants.find(v => v.variantId === vc.id);
+              if (cv) {
+                await supabase.from("variant_classifications").update({
+                  rationale_json: {
+                    ...cv.classification.rationale_json,
+                    gnomad_af: gnomadResult.af,
+                    gnomad_af_popmax: gnomadResult.af_popmax,
+                    gnomad_homozygotes: gnomadResult.homozygote_count,
+                    gnomad_source: gnomadResult.source,
+                    gnomad_filtered: false,
+                  },
+                }).eq("variant_id", vc.id);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    await logStep(supabase, jobId, "gnomad_filtering", "completed", {
+      is_germline: isGermline,
+      has_pop_af_in_vcf: hasPopAfInVcf,
+      lookups: gnomadHits,
+      filtered_common: gnomadFiltered,
+      tier_downgrades: gnomadDowngrades,
+      skipped: gnomadHits === 0 ? (isGermline ? "no_candidates_or_timeout" : "somatic_with_vcf_af") : undefined,
+    });
+
     // ===== STEP 8: CLINVAR ANNOTATION =====
     await logStep(supabase, jobId, "clinvar_annotation", "started");
     // Collect variant coordinates for ClinVar lookup (limit to 50 to respect rate limits + time)
