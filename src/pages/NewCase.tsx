@@ -214,7 +214,7 @@ export default function NewCase() {
                     <input
                       id="vcf-input"
                       type="file"
-                      accept=".vcf,.vcf.gz"
+                      accept=".vcf,.vcf.gz,.gvcf,.gvcf.gz"
                       className="hidden"
                       onChange={handleFileSelect}
                     />
