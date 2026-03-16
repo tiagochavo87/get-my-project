@@ -405,6 +405,85 @@ function extractFullAnnotation(v: ParsedVariant, geneRefs: GeneRef[]): Extracted
   return result;
 }
 
+// ============================================================
+// LOCAL CONSEQUENCE INFERENCE — No external API needed
+// ============================================================
+function inferConsequenceLocally(ref: string, alt: string, gene: string | null, hasGene: boolean): string | null {
+  const refLen = ref.length;
+  const altLen = alt.length;
+
+  if (refLen === 1 && altLen === 1) {
+    // SNV
+    if (!hasGene && !gene) return "intergenic_variant";
+    // Without transcript info, we infer coding region if gene is known
+    return gene ? "missense_variant" : "intergenic_variant";
+  }
+
+  if (refLen > altLen) {
+    // Deletion
+    const delLen = refLen - altLen;
+    if (!gene) return "intergenic_variant";
+    if (delLen % 3 === 0) return "inframe_deletion";
+    return "frameshift_variant";
+  }
+
+  if (altLen > refLen) {
+    // Insertion
+    const insLen = altLen - refLen;
+    if (!gene) return "intergenic_variant";
+    if (insLen % 3 === 0) return "inframe_insertion";
+    return "frameshift_variant";
+  }
+
+  // MNV (multi-nucleotide variant, same length)
+  if (refLen > 1) {
+    return gene ? "missense_variant" : "intergenic_variant";
+  }
+
+  return null;
+}
+
+function mapConsequenceToImpact(consequence: string): string {
+  const highImpact = ["frameshift_variant", "stop_gained", "stop_lost", "start_lost", "splice_acceptor_variant", "splice_donor_variant"];
+  const moderateImpact = ["missense_variant", "inframe_deletion", "inframe_insertion", "protein_altering_variant"];
+  const lowImpact = ["synonymous_variant", "splice_region_variant", "stop_retained_variant"];
+
+  if (highImpact.includes(consequence)) return "HIGH";
+  if (moderateImpact.includes(consequence)) return "MODERATE";
+  if (lowImpact.includes(consequence)) return "LOW";
+  return "MODIFIER";
+}
+
+function generateLocalHGVSg(chrom: string, pos: number, ref: string, alt: string): string {
+  const normalizedChrom = chrom.replace("chr", "");
+  const refLen = ref.length;
+  const altLen = alt.length;
+
+  if (refLen === 1 && altLen === 1) {
+    // SNV: g.posRef>Alt
+    return `g.${normalizedChrom}:${pos}${ref}>${alt}`;
+  }
+
+  if (refLen > altLen) {
+    // Deletion
+    const delStart = pos + 1;
+    const delEnd = pos + refLen - 1;
+    if (delStart === delEnd) {
+      return `g.${normalizedChrom}:${delStart}del`;
+    }
+    return `g.${normalizedChrom}:${delStart}_${delEnd}del`;
+  }
+
+  if (altLen > refLen) {
+    // Insertion
+    const insSeq = alt.substring(refLen);
+    return `g.${normalizedChrom}:${pos}_${pos + 1}ins${insSeq}`;
+  }
+
+  // MNV
+  return `g.${normalizedChrom}:${pos}_${pos + refLen - 1}delins${alt}`;
+}
+
 function lookupGeneByPosition(chrom: string, pos: number, geneRefs: GeneRef[]): GeneRef | null {
   const normalizedChrom = chrom.replace("chr", "");
   for (const g of geneRefs) {
