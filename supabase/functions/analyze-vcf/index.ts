@@ -460,12 +460,20 @@ interface FilterConfig {
   require_pass: boolean;
 }
 
-const DEFAULT_FILTER: FilterConfig = {
+const SOMATIC_FILTER: FilterConfig = {
   min_qual: 20,
   min_depth: 10,
   min_af: 0.01,
-  max_population_af: 0.01, // gnomAD AF threshold
-  require_pass: false, // Many VCFs have "." as FILTER which is valid
+  max_population_af: 1, // No population filtering for somatic
+  require_pass: false,
+};
+
+const GERMLINE_FILTER: FilterConfig = {
+  min_qual: 20,
+  min_depth: 15,
+  min_af: 0.15, // Germline expects ~50% or ~100% AF
+  max_population_af: 0.01,
+  require_pass: false,
 };
 
 function passesQualityFilter(v: ParsedVariant, config: FilterConfig): { passes: boolean; reasons: string[] } {
