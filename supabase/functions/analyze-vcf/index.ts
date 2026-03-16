@@ -308,19 +308,81 @@ function parseVcfContent(content: string): VcfParseResult {
 }
 
 // ============================================================
-// GENE EXTRACTION — from INFO or positional lookup
+// ANNOTATION EXTRACTION — Gene, consequence, HGVS, rsID, transcript, effect
 // ============================================================
-function extractGeneFromInfo(info: Record<string, string>): string | null {
-  for (const key of ["ANN", "CSQ", "GENE", "Gene", "gene", "SYMBOL"]) {
-    if (info[key]) {
-      if (key === "ANN" || key === "CSQ") {
-        const parts = info[key].split("|");
-        if (parts.length > 3 && parts[3]) return parts[3];
-      }
-      return info[key];
+interface ExtractedAnnotation {
+  gene: string | null;
+  consequence: string | null;
+  hgvs_c: string | null;
+  hgvs_p: string | null;
+  transcript: string | null;
+  rsid: string | null;
+  predicted_effect: string | null;
+  annotation_source: string;
+}
+
+function extractFullAnnotation(v: ParsedVariant, geneRefs: GeneRef[]): ExtractedAnnotation {
+  const result: ExtractedAnnotation = {
+    gene: null, consequence: null, hgvs_c: null, hgvs_p: null,
+    transcript: null, rsid: null, predicted_effect: null,
+    annotation_source: "none",
+  };
+
+  // rsID from VCF ID column or INFO
+  if (v.id_field && v.id_field !== "." && v.id_field.startsWith("rs")) {
+    result.rsid = v.id_field;
+  } else if (v.info["RS"]) {
+    result.rsid = `rs${v.info["RS"]}`;
+  } else if (v.info["RSID"]) {
+    result.rsid = v.info["RSID"];
+  }
+
+  // ANN field (SnpEff format): Allele|Annotation|Impact|Gene|GeneID|FeatureType|FeatureID|TranscriptBiotype|Rank|HGVS.c|HGVS.p|...
+  if (v.info["ANN"]) {
+    const p = v.info["ANN"].split("|");
+    result.gene = p[3] || null;
+    result.consequence = p[1] || null;
+    result.transcript = p[6] || null;
+    result.hgvs_c = p[9] || null;
+    result.hgvs_p = p[10] || null;
+    result.predicted_effect = p[2] || null; // Impact: HIGH, MODERATE, LOW, MODIFIER
+    result.annotation_source = "snpeff_ann";
+    return result;
+  }
+
+  // CSQ field (VEP format): Allele|Consequence|IMPACT|SYMBOL|Gene|Feature_type|Feature|BIOTYPE|EXON|INTRON|HGVSc|HGVSp|...
+  if (v.info["CSQ"]) {
+    const p = v.info["CSQ"].split("|");
+    result.gene = p[3] || null;
+    result.consequence = p[1] || null;
+    result.transcript = p[6] || null;
+    result.hgvs_c = p[10] || null;
+    result.hgvs_p = p[11] || null;
+    result.predicted_effect = p[2] || null; // IMPACT
+    result.annotation_source = "vep_csq";
+    return result;
+  }
+
+  // Direct INFO fields
+  for (const key of ["GENE", "Gene", "gene", "SYMBOL"]) {
+    if (v.info[key]) { result.gene = v.info[key]; result.annotation_source = "vcf_info_field"; break; }
+  }
+  if (v.info["EFFECT"]) result.consequence = v.info["EFFECT"];
+  if (v.info["IMPACT"]) result.predicted_effect = v.info["IMPACT"];
+  if (v.info["HGVS_C"] || v.info["HGVSc"]) result.hgvs_c = v.info["HGVS_C"] || v.info["HGVSc"];
+  if (v.info["HGVS_P"] || v.info["HGVSp"]) result.hgvs_p = v.info["HGVS_P"] || v.info["HGVSp"];
+  if (v.info["Feature"] || v.info["TRANSCRIPT"]) result.transcript = v.info["Feature"] || v.info["TRANSCRIPT"];
+
+  // Positional lookup fallback
+  if (!result.gene) {
+    const geneRef = lookupGeneByPosition(v.chrom, v.pos, geneRefs);
+    if (geneRef) {
+      result.gene = geneRef.gene_symbol;
+      result.annotation_source = "positional_lookup_v1";
     }
   }
-  return null;
+
+  return result;
 }
 
 function lookupGeneByPosition(chrom: string, pos: number, geneRefs: GeneRef[]): GeneRef | null {
@@ -331,18 +393,6 @@ function lookupGeneByPosition(chrom: string, pos: number, geneRefs: GeneRef[]): 
     }
   }
   return null;
-}
-
-function extractConsequenceFromInfo(info: Record<string, string>): string | null {
-  if (info["ANN"]) { const p = info["ANN"].split("|"); if (p.length > 1) return p[1]; }
-  if (info["CSQ"]) { const p = info["CSQ"].split("|"); if (p.length > 1) return p[1]; }
-  return null;
-}
-
-function extractHgvsFromInfo(info: Record<string, string>): { hgvs_c: string | null; hgvs_p: string | null } {
-  if (info["ANN"]) { const p = info["ANN"].split("|"); return { hgvs_c: p[9] || null, hgvs_p: p[10] || null }; }
-  if (info["CSQ"]) { const p = info["CSQ"].split("|"); return { hgvs_c: p[10] || null, hgvs_p: p[11] || null }; }
-  return { hgvs_c: null, hgvs_p: null };
 }
 
 // ============================================================
