@@ -54,8 +54,8 @@ export default function NewCase() {
     e.preventDefault();
     if (!file || !user) return;
 
-    if (!sampleType || !assembly || !diagnosis || !regulatoryRegion || !patientAge || !patientSex) {
-      toast.error('Please fill all required fields');
+    if (!sampleType || !assembly || !diagnosis) {
+      toast.error('Please fill all required fields (Sample Type, Assembly, Diagnosis)');
       return;
     }
 
