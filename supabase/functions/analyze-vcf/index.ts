@@ -311,6 +311,14 @@ function parseVcfContent(content: string): VcfParseResult {
     console.log(`[GVCF] Skipped ${gvcfRefBlocksSkipped} reference blocks`);
   }
 
+  // Detect GVCF format
+  const isGvcf = gvcfRefBlocksSkipped > 0 ||
+    headerLines.some(h => h.includes("GVCFBlock") || h.includes("<NON_REF>") || h.includes("gvcf"));
+
+  if (isGvcf) {
+    console.log(`[GVCF] Detected GVCF format. ${variants.length} true variants extracted, ${gvcfRefBlocksSkipped} ref blocks skipped.`);
+  }
+
   return {
     headerLines,
     variants,
@@ -319,6 +327,8 @@ function parseVcfContent(content: string): VcfParseResult {
     infoFields: [...infoFieldSet],
     formatFields: [...formatFieldSet],
     vcfVersion,
+    isGvcf,
+    gvcfRefBlocksSkipped,
     isValid: validationErrors.length === 0 && hasChromLine,
     validationErrors,
   };
