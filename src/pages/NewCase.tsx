@@ -54,8 +54,8 @@ export default function NewCase() {
     e.preventDefault();
     if (!file || !user) return;
 
-    if (!sampleType || !assembly || !diagnosis || !regulatoryRegion || !patientAge || !patientSex) {
-      toast.error('Please fill all required fields');
+    if (!sampleType || !assembly || !diagnosis) {
+      toast.error('Please fill all required fields (Sample Type, Assembly, Diagnosis)');
       return;
     }
 
@@ -77,9 +77,9 @@ export default function NewCase() {
           sample_type: sampleType,
           assembly,
           diagnosis,
-          regulatory_region: regulatoryRegion,
-          patient_age: parseInt(patientAge),
-          patient_sex: patientSex,
+          regulatory_region: regulatoryRegion || 'brazil',
+          patient_age: patientAge ? parseInt(patientAge) : 0,
+          patient_sex: patientSex || 'other',
           prior_treatment_lines: priorTreatmentLines ? parseInt(priorTreatmentLines) : 0,
           transplant_eligibility: transplantEligibility || 'unknown',
           iss_stage: issStage || null,
@@ -119,7 +119,7 @@ export default function NewCase() {
     }
   };
 
-  const isFormValid = file && sampleType && assembly && diagnosis && regulatoryRegion && patientAge && patientSex;
+  const isFormValid = file && sampleType && assembly && diagnosis;
 
   return (
     <AppLayout>
@@ -220,7 +220,7 @@ export default function NewCase() {
                     </Select>
                   </div>
                   <div className="space-y-1.5">
-                    <Label className="text-xs">Regulatory Region *</Label>
+                    <Label className="text-xs">Regulatory Region</Label>
                     <Select value={regulatoryRegion} onValueChange={setRegulatoryRegion}>
                       <SelectTrigger><SelectValue placeholder="Select..." /></SelectTrigger>
                       <SelectContent>
@@ -232,11 +232,11 @@ export default function NewCase() {
                     </Select>
                   </div>
                   <div className="space-y-1.5">
-                    <Label className="text-xs">Patient Age *</Label>
+                    <Label className="text-xs">Patient Age</Label>
                     <Input type="number" placeholder="Years" min={0} max={120} value={patientAge} onChange={e => setPatientAge(e.target.value)} />
                   </div>
                   <div className="space-y-1.5">
-                    <Label className="text-xs">Patient Sex *</Label>
+                    <Label className="text-xs">Patient Sex</Label>
                     <Select value={patientSex} onValueChange={setPatientSex}>
                       <SelectTrigger><SelectValue placeholder="Select..." /></SelectTrigger>
                       <SelectContent>
