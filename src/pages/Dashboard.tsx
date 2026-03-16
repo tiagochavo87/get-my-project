@@ -59,10 +59,10 @@ export default function Dashboard() {
     if (!user) return;
     const fetchCases = async () => {
       const { data, error } = await supabase
-        .from('cases')
+        .from('cases' as any)
         .select('*')
         .order('created_at', { ascending: false });
-      if (!error && data) setCases(data as DBCase[]);
+      if (!error && data) setCases(data as unknown as DBCase[]);
       setLoading(false);
     };
     fetchCases();

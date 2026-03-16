@@ -97,14 +97,22 @@ const MM_THERAPEUTIC_MAP: Record<string, TherapyEntry[]> = {
 };
 
 // ============================================================
-// MM HOTSPOT MUTATIONS
+// MM HOTSPOT MUTATIONS — GRCh37 + GRCh38
 // ============================================================
-const MM_HOTSPOTS: Record<string, { positions: number[]; significance: string }> = {
+const MM_HOTSPOTS_37: Record<string, { positions: number[]; significance: string }> = {
   TP53: { positions: [7577548, 7577539, 7577120, 7578406, 7578190, 7578271, 7578212], significance: "DNA binding domain hotspot" },
   KRAS: { positions: [25245350, 25245347, 25227342], significance: "GTPase domain (G12/G13/Q61)" },
   NRAS: { positions: [114716126, 114713908, 114713909], significance: "GTPase domain (G12/G13/Q61)" },
   BRAF: { positions: [140753336, 140753335], significance: "Kinase domain (V600)" },
   XPO1: { positions: [61714532], significance: "E571K hotspot" },
+};
+
+const MM_HOTSPOTS_38: Record<string, { positions: number[]; significance: string }> = {
+  TP53: { positions: [7674220, 7674211, 7673792, 7675078, 7674862, 7674943, 7674884], significance: "DNA binding domain hotspot" },
+  KRAS: { positions: [25245350, 25245347, 25227342], significance: "GTPase domain (G12/G13/Q61)" },
+  NRAS: { positions: [114713464, 114711246, 114711247], significance: "GTPase domain (G12/G13/Q61)" },
+  BRAF: { positions: [140753336, 140753335], significance: "Kinase domain (V600)" },
+  XPO1: { positions: [61534527], significance: "E571K hotspot" },
 };
 
 // ============================================================
@@ -359,6 +367,7 @@ function classifyVariant(
   gene: string | null,
   geneRef: GeneRef | null,
   contextType: string,
+  assembly: string,
 ) {
   const af = parseFloat(v.info["AF"] || v.sample_data["AF"] || "0");
   const dp = parseInt(v.info["DP"] || v.sample_data["DP"] || "0");
@@ -372,7 +381,8 @@ function classifyVariant(
   const isKnown = relevance === "known";
 
   // Check hotspot
-  const isHotspot = gene && MM_HOTSPOTS[gene]?.positions.includes(v.pos);
+  const hotspotMap = assembly === "GRCh38" ? MM_HOTSPOTS_38 : MM_HOTSPOTS_37;
+  const isHotspot = gene && hotspotMap[gene]?.positions.includes(v.pos);
 
   let tier = 4;
   let confidence = "low";
@@ -888,8 +898,9 @@ Deno.serve(async (req) => {
         const variantId = inserted[j]?.id;
         if (!variantId) continue;
 
-        // Quality filter
+        // Quality filter — skip low-quality variants
         const filterResult = passesQualityFilter(v, DEFAULT_FILTER);
+        if (!filterResult.passes) continue;
 
         // Gene extraction: try INFO first, then positional lookup
         let gene = extractGeneFromInfo(v.info);
@@ -908,7 +919,7 @@ Deno.serve(async (req) => {
 
         const consequence = extractConsequenceFromInfo(v.info);
         const hgvs = extractHgvsFromInfo(v.info);
-        const classification = classifyVariant(v, gene, geneRef, caseData.sample_type);
+        const classification = classifyVariant(v, gene, geneRef, caseData.sample_type, caseData.assembly);
 
         // Only store detailed data for potentially relevant variants (tier <= 3 or has gene)
         if (classification.tier <= 3 || gene) {
