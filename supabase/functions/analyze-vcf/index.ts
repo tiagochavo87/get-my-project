@@ -97,14 +97,22 @@ const MM_THERAPEUTIC_MAP: Record<string, TherapyEntry[]> = {
 };
 
 // ============================================================
-// MM HOTSPOT MUTATIONS
+// MM HOTSPOT MUTATIONS — GRCh37 + GRCh38
 // ============================================================
-const MM_HOTSPOTS: Record<string, { positions: number[]; significance: string }> = {
+const MM_HOTSPOTS_37: Record<string, { positions: number[]; significance: string }> = {
   TP53: { positions: [7577548, 7577539, 7577120, 7578406, 7578190, 7578271, 7578212], significance: "DNA binding domain hotspot" },
   KRAS: { positions: [25245350, 25245347, 25227342], significance: "GTPase domain (G12/G13/Q61)" },
   NRAS: { positions: [114716126, 114713908, 114713909], significance: "GTPase domain (G12/G13/Q61)" },
   BRAF: { positions: [140753336, 140753335], significance: "Kinase domain (V600)" },
   XPO1: { positions: [61714532], significance: "E571K hotspot" },
+};
+
+const MM_HOTSPOTS_38: Record<string, { positions: number[]; significance: string }> = {
+  TP53: { positions: [7674220, 7674211, 7673792, 7675078, 7674862, 7674943, 7674884], significance: "DNA binding domain hotspot" },
+  KRAS: { positions: [25245350, 25245347, 25227342], significance: "GTPase domain (G12/G13/Q61)" },
+  NRAS: { positions: [114713464, 114711246, 114711247], significance: "GTPase domain (G12/G13/Q61)" },
+  BRAF: { positions: [140753336, 140753335], significance: "Kinase domain (V600)" },
+  XPO1: { positions: [61534527], significance: "E571K hotspot" },
 };
 
 // ============================================================
