@@ -898,8 +898,9 @@ Deno.serve(async (req) => {
         const variantId = inserted[j]?.id;
         if (!variantId) continue;
 
-        // Quality filter
+        // Quality filter — skip low-quality variants
         const filterResult = passesQualityFilter(v, DEFAULT_FILTER);
+        if (!filterResult.passes) continue;
 
         // Gene extraction: try INFO first, then positional lookup
         let gene = extractGeneFromInfo(v.info);
@@ -918,7 +919,7 @@ Deno.serve(async (req) => {
 
         const consequence = extractConsequenceFromInfo(v.info);
         const hgvs = extractHgvsFromInfo(v.info);
-        const classification = classifyVariant(v, gene, geneRef, caseData.sample_type);
+        const classification = classifyVariant(v, gene, geneRef, caseData.sample_type, caseData.assembly);
 
         // Only store detailed data for potentially relevant variants (tier <= 3 or has gene)
         if (classification.tier <= 3 || gene) {
