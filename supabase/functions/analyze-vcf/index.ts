@@ -213,6 +213,8 @@ interface VcfParseResult {
   infoFields: string[];
   formatFields: string[];
   vcfVersion: string | null;
+  isGvcf: boolean;
+  gvcfRefBlocksSkipped: number;
   isValid: boolean;
   validationErrors: string[];
 }
