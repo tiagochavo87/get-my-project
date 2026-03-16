@@ -1169,14 +1169,18 @@ Deno.serve(async (req) => {
       if (classificationBatch.length > 0) {
         await supabase.from("variant_classifications").insert(classificationBatch);
       }
+      processedCount += chunk.length;
     }
 
-    await logStep(supabase, jobId, "classifying", "completed", {
-      total_classified: classifiedVariants.length,
-      tier1: classifiedVariants.filter(v => v.tier === 1).length,
-      tier2: classifiedVariants.filter(v => v.tier === 2).length,
-      tier3: classifiedVariants.filter(v => v.tier === 3).length,
-    });
+    if (!timeoutReached) {
+      await logStep(supabase, jobId, "classifying", "completed", {
+        total_classified: classifiedVariants.length,
+        processed: processedCount,
+        tier1: classifiedVariants.filter(v => v.tier === 1).length,
+        tier2: classifiedVariants.filter(v => v.tier === 2).length,
+        tier3: classifiedVariants.filter(v => v.tier === 3).length,
+      });
+    }
 
     // ===== STEP 7: THERAPIES =====
     await logStep(supabase, jobId, "therapy_matching", "started");
