@@ -48,7 +48,7 @@ export default function NewCase() {
     if (f && isVcfFile(f)) {
       setFile(f);
     } else {
-      toast.error('Please upload a .vcf or .vcf.gz file');
+      toast.error('Please upload a .vcf, .vcf.gz, .gvcf, or .gvcf.gz file');
     }
   };
 
