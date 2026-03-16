@@ -13,32 +13,27 @@ Deno.serve(async (req) => {
 
   try {
     const authHeader = req.headers.get("Authorization");
-    if (!authHeader) {
+    if (!authHeader?.startsWith("Bearer ")) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const anonKey = Deno.env.get("SUPABASE_ANON_KEY") || Deno.env.get("SUPABASE_PUBLISHABLE_KEY")!;
     const supabase = createClient(supabaseUrl, serviceKey);
 
-    // Validate user
-    const anonClient = createClient(
-      supabaseUrl,
-      Deno.env.get("SUPABASE_ANON_KEY") || Deno.env.get("SUPABASE_PUBLISHABLE_KEY")!
-    );
-    const {
-      data: { user },
-      error: authError,
-    } = await anonClient.auth.getUser(authHeader.replace("Bearer ", ""));
-    if (authError || !user) {
+    // Validate user via getClaims
+    const anonClient = createClient(supabaseUrl, anonKey, { global: { headers: { Authorization: authHeader } } });
+    const token = authHeader.replace("Bearer ", "");
+    const { data: claimsData, error: authError } = await anonClient.auth.getClaims(token);
+    if (authError || !claimsData?.claims) {
       return new Response(JSON.stringify({ error: "Invalid token" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
+    const userId = claimsData.claims.sub as string;
 
     const body = await req.json();
     const { action } = body;
@@ -60,25 +55,18 @@ Deno.serve(async (req) => {
         );
       }
 
-      // Verify case ownership
-      const { data: caseData } = await supabase
-        .from("cases")
-        .select("id, user_id")
-        .eq("id", case_id)
-        .single();
-      if (!caseData || caseData.user_id !== user.id) {
+      const { data: caseData } = await supabase.from("cases").select("id, user_id").eq("id", case_id).single();
+      if (!caseData || caseData.user_id !== userId) {
         return new Response(JSON.stringify({ error: "Forbidden" }), {
-          status: 403,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
 
-      // Update variant classification
       const { error: updateErr } = await supabase
         .from("variant_classifications")
         .update({
           review_status,
-          reviewed_by: user.id,
+          reviewed_by: userId,
           reviewed_at: new Date().toISOString(),
           review_notes: review_notes || null,
         })
@@ -86,14 +74,12 @@ Deno.serve(async (req) => {
 
       if (updateErr) {
         return new Response(JSON.stringify({ error: "Failed to update", details: updateErr.message }), {
-          status: 500,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
 
-      // Audit log
       await supabase.from("audit_logs").insert({
-        actor_user_id: user.id,
+        actor_user_id: userId,
         entity_type: "variant_classification",
         entity_id: variant_id,
         action: `variant_${review_status}`,
@@ -101,8 +87,7 @@ Deno.serve(async (req) => {
       });
 
       return new Response(JSON.stringify({ success: true, review_status }), {
-        status: 200,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
@@ -111,67 +96,50 @@ Deno.serve(async (req) => {
       const { case_id } = body;
       if (!case_id) {
         return new Response(JSON.stringify({ error: "case_id required" }), {
-          status: 400,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
 
-      // Verify case ownership
-      const { data: caseData } = await supabase
-        .from("cases")
-        .select("id, user_id, status")
-        .eq("id", case_id)
-        .single();
-      if (!caseData || caseData.user_id !== user.id) {
+      const { data: caseData } = await supabase.from("cases").select("id, user_id, status").eq("id", case_id).single();
+      if (!caseData || caseData.user_id !== userId) {
         return new Response(JSON.stringify({ error: "Forbidden" }), {
-          status: 403,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
 
-      // Check all Tier 1-3 variants have been reviewed
       const { data: pendingVariants } = await supabase
         .from("variant_classifications")
         .select("id, variant_id, tier, review_status")
         .in("variant_id", (
-          await supabase
-            .from("vcf_variants")
-            .select("id")
-            .eq("case_id", case_id)
+          await supabase.from("vcf_variants").select("id").eq("case_id", case_id)
         ).data?.map((v: any) => v.id) || [])
         .lte("tier", 3)
         .eq("review_status", "pending");
 
       if (pendingVariants && pendingVariants.length > 0) {
         return new Response(
-          JSON.stringify({
-            error: "Cannot finalize — pending variants remain",
-            pending_count: pendingVariants.length,
-          }),
+          JSON.stringify({ error: "Cannot finalize — pending variants remain", pending_count: pendingVariants.length }),
           { status: 422, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
 
-      // Update case status
       await supabase.from("cases").update({
         status: "completed",
-        reviewed_by: user.id,
+        reviewed_by: userId,
         reviewed_at: new Date().toISOString(),
       }).eq("id", case_id);
 
-      // Update interpretation_results
       await supabase.from("interpretation_results").update({
         status: "completed",
         report_ready: true,
       }).eq("case_id", case_id);
 
-      // Audit log
       await supabase.from("audit_logs").insert({
-        actor_user_id: user.id,
+        actor_user_id: userId,
         entity_type: "case",
         entity_id: case_id,
         action: "case_review_finalized",
-        after_json: { status: "completed", reviewed_by: user.id },
+        after_json: { status: "completed", reviewed_by: userId },
       });
 
       return new Response(
@@ -181,29 +149,25 @@ Deno.serve(async (req) => {
     }
 
     // === ACTION: Get reviewable variants for a case ===
-    if (action === "get_reviewable" || req.method === "GET") {
-      const case_id = body.case_id || new URL(req.url).searchParams.get("case_id");
+    if (action === "get_reviewable") {
+      const case_id = body.case_id;
       if (!case_id) {
         return new Response(JSON.stringify({ error: "case_id required" }), {
-          status: 400,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
 
-      // Verify ownership
       const { data: caseData } = await supabase
         .from("cases")
         .select("id, user_id, case_number, status, diagnosis, sample_type, assembly")
         .eq("id", case_id)
         .single();
-      if (!caseData || caseData.user_id !== user.id) {
+      if (!caseData || caseData.user_id !== userId) {
         return new Response(JSON.stringify({ error: "Forbidden" }), {
-          status: 403,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
 
-      // Get all variants with annotations and classifications for Tier 1-3
       const { data: variants } = await supabase
         .from("vcf_variants")
         .select("id, chrom, pos, ref, alt, qual, filter")
@@ -211,30 +175,18 @@ Deno.serve(async (req) => {
 
       if (!variants || variants.length === 0) {
         return new Response(
-          JSON.stringify({ case: caseData, variants: [] }),
+          JSON.stringify({ case: caseData, variants: [], summary: { total: 0, pending: 0, approved: 0, rejected: 0 } }),
           { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
 
       const variantIds = variants.map((v: any) => v.id);
+      const [{ data: annotations }, { data: classifications }] = await Promise.all([
+        supabase.from("variant_annotations").select("*").in("variant_id", variantIds),
+        supabase.from("variant_classifications").select("*").in("variant_id", variantIds).lte("tier", 3),
+      ]);
 
-      // Get annotations
-      const { data: annotations } = await supabase
-        .from("variant_annotations")
-        .select("*")
-        .in("variant_id", variantIds);
-
-      // Get classifications (Tier 1-3 only)
-      const { data: classifications } = await supabase
-        .from("variant_classifications")
-        .select("*")
-        .in("variant_id", variantIds)
-        .lte("tier", 3);
-
-      // Join the data
-      const classifiedVariantIds = new Set(
-        (classifications || []).map((c: any) => c.variant_id)
-      );
+      const classifiedVariantIds = new Set((classifications || []).map((c: any) => c.variant_id));
 
       const reviewableVariants = variants
         .filter((v: any) => classifiedVariantIds.has(v.id))
@@ -281,8 +233,7 @@ Deno.serve(async (req) => {
     }
 
     return new Response(JSON.stringify({ error: "Unknown action" }), {
-      status: 400,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
+      status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (err) {
     console.error("Review error:", err);
