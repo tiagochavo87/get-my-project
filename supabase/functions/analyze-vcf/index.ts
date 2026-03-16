@@ -1909,7 +1909,7 @@ Deno.serve(async (req) => {
     }
     await logStep(supabase, jobId, "therapy_matching", "completed", { options_found: therapyInserts.length });
 
-    // ===== STEP 9: BIOMARKERS =====
+    // ===== STEP 11: BIOMARKERS =====
     await logStep(supabase, jobId, "biomarker_extraction", "started");
     const biomarkers = extractBiomarkers(classifiedVariants, qc);
     // Store biomarkers
