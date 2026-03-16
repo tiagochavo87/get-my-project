@@ -17,7 +17,9 @@ export default function NewCase() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const [file, setFile] = useState<File | null>(null);
+  const [svFile, setSvFile] = useState<File | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  const [svDragOver, setSvDragOver] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   // Form state
@@ -34,11 +36,13 @@ export default function NewCase() {
   const [creatinine, setCreatinine] = useState('');
   const [clinicalNotes, setClinicalNotes] = useState('');
 
+  const isVcfFile = (f: File) => f.name.endsWith('.vcf') || f.name.endsWith('.vcf.gz');
+
   const handleFileDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setDragOver(false);
     const f = e.dataTransfer.files[0];
-    if (f && (f.name.endsWith('.vcf') || f.name.endsWith('.vcf.gz'))) {
+    if (f && isVcfFile(f)) {
       setFile(f);
     } else {
       toast.error('Please upload a .vcf or .vcf.gz file');
@@ -48,6 +52,22 @@ export default function NewCase() {
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
     if (f) setFile(f);
+  };
+
+  const handleSvFileDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setSvDragOver(false);
+    const f = e.dataTransfer.files[0];
+    if (f && isVcfFile(f)) {
+      setSvFile(f);
+    } else {
+      toast.error('Please upload a .vcf or .vcf.gz file');
+    }
+  };
+
+  const handleSvFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (f) setSvFile(f);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -68,6 +88,16 @@ export default function NewCase() {
         .upload(filePath, file);
 
       if (uploadError) throw uploadError;
+
+      // 1b. Upload SV VCF if provided
+      let svFilePath: string | null = null;
+      if (svFile) {
+        svFilePath = `${user.id}/${Date.now()}_sv_${svFile.name}`;
+        const { error: svUploadError } = await supabase.storage
+          .from('vcf-files')
+          .upload(svFilePath, svFile);
+        if (svUploadError) throw svUploadError;
+      }
 
       // 2. Insert case record
       const { data: caseData, error: caseError } = await (supabase
@@ -97,12 +127,25 @@ export default function NewCase() {
       if (caseError) throw caseError;
       const insertedCase = caseData as any;
 
+      // 2b. If SV file, register it in uploaded_files
+      if (svFile && svFilePath) {
+        await supabase.from('uploaded_files' as any).insert({
+          case_id: insertedCase.id,
+          user_id: user.id,
+          filename: svFile.name,
+          storage_path: svFilePath,
+          file_type: 'sv_vcf',
+          file_size: svFile.size,
+          upload_status: 'completed',
+        } as any);
+      }
+
       toast.success('Case submitted. Starting analysis pipeline...');
 
       // 3. Trigger VCF analysis pipeline
       const { data: session } = await supabase.auth.getSession();
       supabase.functions.invoke('analyze-vcf', {
-        body: { case_id: insertedCase.id },
+        body: { case_id: insertedCase.id, sv_file_path: svFilePath },
         headers: { Authorization: `Bearer ${session.session?.access_token}` },
       }).then((res) => {
         if (res.error) {
@@ -137,38 +180,88 @@ export default function NewCase() {
                 <CardTitle className="text-base">VCF File Upload</CardTitle>
                 <CardDescription>Accepts .vcf or .vcf.gz from exome or whole genome sequencing</CardDescription>
               </CardHeader>
-              <CardContent>
-                <div
-                  onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-                  onDragLeave={() => setDragOver(false)}
-                  onDrop={handleFileDrop}
-                  className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors cursor-pointer ${
-                    dragOver ? 'border-primary bg-primary/5' : file ? 'border-accent bg-accent/5' : 'border-border hover:border-primary/50'
-                  }`}
-                  onClick={() => document.getElementById('vcf-input')?.click()}
-                >
-                  {file ? (
-                    <div className="flex items-center justify-center gap-3">
-                      <CheckCircle2 className="h-8 w-8 text-accent" />
-                      <div className="text-left">
-                        <p className="font-medium text-sm">{file.name}</p>
-                        <p className="text-xs text-muted-foreground">{(file.size / 1e6).toFixed(1)} MB</p>
+              <CardContent className="space-y-4">
+                {/* Main VCF */}
+                <div>
+                  <Label className="text-xs font-medium mb-2 block">SNV / Indel VCF *</Label>
+                  <div
+                    onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                    onDragLeave={() => setDragOver(false)}
+                    onDrop={handleFileDrop}
+                    className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors cursor-pointer ${
+                      dragOver ? 'border-primary bg-primary/5' : file ? 'border-accent bg-accent/5' : 'border-border hover:border-primary/50'
+                    }`}
+                    onClick={() => document.getElementById('vcf-input')?.click()}
+                  >
+                    {file ? (
+                      <div className="flex items-center justify-center gap-3">
+                        <CheckCircle2 className="h-6 w-6 text-accent" />
+                        <div className="text-left">
+                          <p className="font-medium text-sm">{file.name}</p>
+                          <p className="text-xs text-muted-foreground">{(file.size / 1e6).toFixed(1)} MB</p>
+                        </div>
                       </div>
-                    </div>
-                  ) : (
-                    <>
-                      <Upload className="h-10 w-10 mx-auto text-muted-foreground mb-3" />
-                      <p className="text-sm font-medium">Drag & drop your VCF file here</p>
-                      <p className="text-xs text-muted-foreground mt-1">or click to browse</p>
-                    </>
-                  )}
-                  <input
-                    id="vcf-input"
-                    type="file"
-                    accept=".vcf,.vcf.gz"
-                    className="hidden"
-                    onChange={handleFileSelect}
-                  />
+                    ) : (
+                      <>
+                        <Upload className="h-8 w-8 mx-auto text-muted-foreground mb-2" />
+                        <p className="text-sm font-medium">Drag & drop your VCF file here</p>
+                        <p className="text-xs text-muted-foreground mt-1">or click to browse</p>
+                      </>
+                    )}
+                    <input
+                      id="vcf-input"
+                      type="file"
+                      accept=".vcf,.vcf.gz"
+                      className="hidden"
+                      onChange={handleFileSelect}
+                    />
+                  </div>
+                </div>
+
+                {/* SV VCF */}
+                <div>
+                  <Label className="text-xs font-medium mb-2 block">
+                    Structural Variants VCF <span className="text-muted-foreground font-normal">(optional)</span>
+                  </Label>
+                  <div
+                    onDragOver={(e) => { e.preventDefault(); setSvDragOver(true); }}
+                    onDragLeave={() => setSvDragOver(false)}
+                    onDrop={handleSvFileDrop}
+                    className={`border-2 border-dashed rounded-lg p-4 text-center transition-colors cursor-pointer ${
+                      svDragOver ? 'border-primary bg-primary/5' : svFile ? 'border-accent bg-accent/5' : 'border-border hover:border-primary/50'
+                    }`}
+                    onClick={() => document.getElementById('sv-vcf-input')?.click()}
+                  >
+                    {svFile ? (
+                      <div className="flex items-center justify-center gap-3">
+                        <CheckCircle2 className="h-5 w-5 text-accent" />
+                        <div className="text-left">
+                          <p className="font-medium text-sm">{svFile.name}</p>
+                          <p className="text-xs text-muted-foreground">{(svFile.size / 1e6).toFixed(1)} MB</p>
+                        </div>
+                        <button
+                          type="button"
+                          className="text-xs text-destructive hover:underline ml-2"
+                          onClick={(e) => { e.stopPropagation(); setSvFile(null); }}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <p className="text-xs text-muted-foreground">
+                          Drop a .sv.vcf / .sv.vcf.gz here for translocations, deletions, inversions, etc.
+                        </p>
+                      </>
+                    )}
+                    <input
+                      id="sv-vcf-input"
+                      type="file"
+                      accept=".vcf,.vcf.gz"
+                      className="hidden"
+                      onChange={handleSvFileSelect}
+                    />
+                  </div>
                 </div>
               </CardContent>
             </Card>
