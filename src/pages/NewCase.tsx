@@ -181,7 +181,7 @@ export default function NewCase() {
             <Card>
               <CardHeader className="pb-3">
                 <CardTitle className="text-base">VCF File Upload</CardTitle>
-                <CardDescription>Accepts .vcf or .vcf.gz from exome or whole genome sequencing</CardDescription>
+                <CardDescription>Accepts .vcf, .vcf.gz, .gvcf, .gvcf.gz from exome or whole genome sequencing</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 {/* Main VCF */}
