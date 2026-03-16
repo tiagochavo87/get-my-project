@@ -233,7 +233,7 @@ export default function Dashboard() {
                               {new Date(c.created_at).toLocaleDateString()}
                             </td>
                             <td className="px-4 py-3 text-right">
-                              {(c.status === 'completed' || c.status === 'review_required') && (
+                              {(c.status === 'completed' || c.status === 'review_required' || c.status === 'failed') && (
                                 <Button variant="ghost" size="sm" asChild>
                                   <Link to={`/case/${c.id}`}>
                                     <span className="sr-only">View</span>

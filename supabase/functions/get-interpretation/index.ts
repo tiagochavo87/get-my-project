@@ -138,6 +138,13 @@ Deno.serve(async (req) => {
         annotation_source: annot?.annotation_source,
         requires_review: c.requires_manual_review,
         rationale: c.rationale_json,
+        // ClinVar data
+        clinvar_significance: annot?.clinvar_significance || null,
+        clinvar_review_status: annot?.clinvar_review_status || null,
+        clinvar_variation_id: annot?.clinvar_variation_id || null,
+        clinvar_conditions: annot?.clinvar_conditions || null,
+        // Review status
+        review_status: c.review_status || "pending",
       };
     });
 

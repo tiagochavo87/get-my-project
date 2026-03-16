@@ -308,19 +308,81 @@ function parseVcfContent(content: string): VcfParseResult {
 }
 
 // ============================================================
-// GENE EXTRACTION — from INFO or positional lookup
+// ANNOTATION EXTRACTION — Gene, consequence, HGVS, rsID, transcript, effect
 // ============================================================
-function extractGeneFromInfo(info: Record<string, string>): string | null {
-  for (const key of ["ANN", "CSQ", "GENE", "Gene", "gene", "SYMBOL"]) {
-    if (info[key]) {
-      if (key === "ANN" || key === "CSQ") {
-        const parts = info[key].split("|");
-        if (parts.length > 3 && parts[3]) return parts[3];
-      }
-      return info[key];
+interface ExtractedAnnotation {
+  gene: string | null;
+  consequence: string | null;
+  hgvs_c: string | null;
+  hgvs_p: string | null;
+  transcript: string | null;
+  rsid: string | null;
+  predicted_effect: string | null;
+  annotation_source: string;
+}
+
+function extractFullAnnotation(v: ParsedVariant, geneRefs: GeneRef[]): ExtractedAnnotation {
+  const result: ExtractedAnnotation = {
+    gene: null, consequence: null, hgvs_c: null, hgvs_p: null,
+    transcript: null, rsid: null, predicted_effect: null,
+    annotation_source: "none",
+  };
+
+  // rsID from VCF ID column or INFO
+  if (v.id_field && v.id_field !== "." && v.id_field.startsWith("rs")) {
+    result.rsid = v.id_field;
+  } else if (v.info["RS"]) {
+    result.rsid = `rs${v.info["RS"]}`;
+  } else if (v.info["RSID"]) {
+    result.rsid = v.info["RSID"];
+  }
+
+  // ANN field (SnpEff format): Allele|Annotation|Impact|Gene|GeneID|FeatureType|FeatureID|TranscriptBiotype|Rank|HGVS.c|HGVS.p|...
+  if (v.info["ANN"]) {
+    const p = v.info["ANN"].split("|");
+    result.gene = p[3] || null;
+    result.consequence = p[1] || null;
+    result.transcript = p[6] || null;
+    result.hgvs_c = p[9] || null;
+    result.hgvs_p = p[10] || null;
+    result.predicted_effect = p[2] || null; // Impact: HIGH, MODERATE, LOW, MODIFIER
+    result.annotation_source = "snpeff_ann";
+    return result;
+  }
+
+  // CSQ field (VEP format): Allele|Consequence|IMPACT|SYMBOL|Gene|Feature_type|Feature|BIOTYPE|EXON|INTRON|HGVSc|HGVSp|...
+  if (v.info["CSQ"]) {
+    const p = v.info["CSQ"].split("|");
+    result.gene = p[3] || null;
+    result.consequence = p[1] || null;
+    result.transcript = p[6] || null;
+    result.hgvs_c = p[10] || null;
+    result.hgvs_p = p[11] || null;
+    result.predicted_effect = p[2] || null; // IMPACT
+    result.annotation_source = "vep_csq";
+    return result;
+  }
+
+  // Direct INFO fields
+  for (const key of ["GENE", "Gene", "gene", "SYMBOL"]) {
+    if (v.info[key]) { result.gene = v.info[key]; result.annotation_source = "vcf_info_field"; break; }
+  }
+  if (v.info["EFFECT"]) result.consequence = v.info["EFFECT"];
+  if (v.info["IMPACT"]) result.predicted_effect = v.info["IMPACT"];
+  if (v.info["HGVS_C"] || v.info["HGVSc"]) result.hgvs_c = v.info["HGVS_C"] || v.info["HGVSc"];
+  if (v.info["HGVS_P"] || v.info["HGVSp"]) result.hgvs_p = v.info["HGVS_P"] || v.info["HGVSp"];
+  if (v.info["Feature"] || v.info["TRANSCRIPT"]) result.transcript = v.info["Feature"] || v.info["TRANSCRIPT"];
+
+  // Positional lookup fallback
+  if (!result.gene) {
+    const geneRef = lookupGeneByPosition(v.chrom, v.pos, geneRefs);
+    if (geneRef) {
+      result.gene = geneRef.gene_symbol;
+      result.annotation_source = "positional_lookup_v1";
     }
   }
-  return null;
+
+  return result;
 }
 
 function lookupGeneByPosition(chrom: string, pos: number, geneRefs: GeneRef[]): GeneRef | null {
@@ -331,18 +393,6 @@ function lookupGeneByPosition(chrom: string, pos: number, geneRefs: GeneRef[]): 
     }
   }
   return null;
-}
-
-function extractConsequenceFromInfo(info: Record<string, string>): string | null {
-  if (info["ANN"]) { const p = info["ANN"].split("|"); if (p.length > 1) return p[1]; }
-  if (info["CSQ"]) { const p = info["CSQ"].split("|"); if (p.length > 1) return p[1]; }
-  return null;
-}
-
-function extractHgvsFromInfo(info: Record<string, string>): { hgvs_c: string | null; hgvs_p: string | null } {
-  if (info["ANN"]) { const p = info["ANN"].split("|"); return { hgvs_c: p[9] || null, hgvs_p: p[10] || null }; }
-  if (info["CSQ"]) { const p = info["CSQ"].split("|"); return { hgvs_c: p[10] || null, hgvs_p: p[11] || null }; }
-  return { hgvs_c: null, hgvs_p: null };
 }
 
 // ============================================================
@@ -410,12 +460,20 @@ interface FilterConfig {
   require_pass: boolean;
 }
 
-const DEFAULT_FILTER: FilterConfig = {
+const SOMATIC_FILTER: FilterConfig = {
   min_qual: 20,
   min_depth: 10,
   min_af: 0.01,
-  max_population_af: 0.01, // gnomAD AF threshold
-  require_pass: false, // Many VCFs have "." as FILTER which is valid
+  max_population_af: 1, // No population filtering for somatic
+  require_pass: false,
+};
+
+const GERMLINE_FILTER: FilterConfig = {
+  min_qual: 20,
+  min_depth: 15,
+  min_af: 0.15, // Germline expects ~50% or ~100% AF
+  max_population_af: 0.01,
+  require_pass: false,
 };
 
 function passesQualityFilter(v: ParsedVariant, config: FilterConfig): { passes: boolean; reasons: string[] } {
@@ -451,10 +509,18 @@ async function queryClinVar(
   assembly: string,
 ): Promise<ClinVarResult | null> {
   try {
-    const assemblyTag = assembly === "GRCh38" ? "GRCh38" : "GRCh37";
-    // Use NCBI variation services API for precise lookup
-    const searchTerm = `${chrom}[Chromosome] AND ${pos}[Base Position] AND ${assemblyTag}[Assembly]`;
-    const esearchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=clinvar&term=${encodeURIComponent(searchTerm)}&retmode=json&retmax=5`;
+    // Use NCBI Variation Services for exact allele matching
+    const assemblyTag = assembly === "GRCh38" ? "GCF_000001405.40" : "GCF_000001405.25";
+    const normalizedChrom = chrom.replace("chr", "");
+    
+    // Try spdi format first: NC_XXXXXX.XX:pos:ref:alt
+    const spdiUrl = `https://api.ncbi.nlm.nih.gov/variation/v0/spdi/${normalizedChrom}:${pos}:${ref}:${alt}/clinvar?assembly=${assembly === "GRCh38" ? "GRCh38" : "GRCh37"}`;
+    
+    let clinvarData: any = null;
+    
+    // Fallback to esearch with exact variant specification
+    const searchTerm = `${normalizedChrom}[Chromosome] AND ${pos}[Base Position for Assembly ${assembly === "GRCh38" ? "GRCh38" : "GRCh37"}]`;
+    const esearchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=clinvar&term=${encodeURIComponent(searchTerm)}&retmode=json&retmax=10`;
 
     const searchResp = await fetch(esearchUrl);
     if (!searchResp.ok) return null;
@@ -463,7 +529,7 @@ async function queryClinVar(
     const ids: string[] = searchData?.esearchresult?.idlist || [];
     if (ids.length === 0) return null;
 
-    // Fetch summaries for matching IDs
+    // Fetch summaries
     const esummaryUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=clinvar&id=${ids.join(",")}&retmode=json`;
     const summaryResp = await fetch(esummaryUrl);
     if (!summaryResp.ok) return null;
@@ -472,15 +538,37 @@ async function queryClinVar(
     const results = summaryData?.result;
     if (!results) return null;
 
-    // Find best match by checking variant details
+    // Match by checking variant_set for exact ref/alt match
     for (const uid of ids) {
       const entry = results[uid];
       if (!entry) continue;
 
+      // Check if the variant matches our ref/alt
+      const varSet = entry.variation_set;
+      let isExactMatch = false;
+      
+      if (varSet && Array.isArray(varSet)) {
+        for (const vs of varSet) {
+          const alleles = vs.variant_alleles;
+          if (alleles) {
+            // Check if ref and alt match
+            const entryRef = vs.ref_allele || "";
+            const entryAlt = vs.alt_allele || "";
+            if (entryRef === ref && entryAlt === alt) {
+              isExactMatch = true;
+              break;
+            }
+          }
+        }
+      }
+      
+      // Also accept if there's only one result at this position (likely match)
+      if (!isExactMatch && ids.length > 1) continue;
+
       // Extract clinical significance
       const significance = entry.clinical_significance?.description || 
                           entry.germline_classification?.description ||
-                          entry.clinical_significance || null;
+                          (typeof entry.clinical_significance === "string" ? entry.clinical_significance : null);
       if (!significance) continue;
 
       const reviewStatus = entry.clinical_significance?.review_status ||
@@ -1213,27 +1301,16 @@ Deno.serve(async (req) => {
         const variantId = inserted[j]?.id;
         if (!variantId) continue;
 
-        // Quality filter — skip low-quality variants
-        const filterResult = passesQualityFilter(v, DEFAULT_FILTER);
+        // Quality filter — select strategy based on sample type
+        const filterConfig = caseData.sample_type === "germline_constitutional" ? GERMLINE_FILTER : SOMATIC_FILTER;
+        const filterResult = passesQualityFilter(v, filterConfig);
         if (!filterResult.passes) continue;
 
-        // Gene extraction: try INFO first, then positional lookup
-        let gene = extractGeneFromInfo(v.info);
-        let geneRef: GeneRef | null = null;
-        let annotationSource = "vcf_info_field";
+        // Full annotation extraction (gene, consequence, HGVS, rsID, transcript, effect)
+        const annot = extractFullAnnotation(v, geneRefList);
+        const gene = annot.gene;
+        const geneRef = gene ? geneRefList.find(g => g.gene_symbol === gene) || null : null;
 
-        if (!gene) {
-          geneRef = lookupGeneByPosition(v.chrom, v.pos, geneRefList);
-          if (geneRef) {
-            gene = geneRef.gene_symbol;
-            annotationSource = "positional_lookup_v1";
-          }
-        } else {
-          geneRef = geneRefList.find(g => g.gene_symbol === gene) || null;
-        }
-
-        const consequence = extractConsequenceFromInfo(v.info);
-        const hgvs = extractHgvsFromInfo(v.info);
         const classification = classifyVariant(v, gene, geneRef, caseData.sample_type, caseData.assembly);
 
         // Only store detailed data for potentially relevant variants (tier <= 3 or has gene)
@@ -1244,15 +1321,15 @@ Deno.serve(async (req) => {
           annotationBatch.push({
             variant_id: variantId,
             gene_symbol: gene,
-            consequence,
-            hgvs_c: hgvs.hgvs_c,
-            hgvs_p: hgvs.hgvs_p,
-            annotation_source: annotationSource,
-            annotation_version: "2.0",
+            consequence: annot.consequence,
+            hgvs_c: annot.hgvs_c,
+            hgvs_p: annot.hgvs_p,
+            annotation_source: annot.annotation_source,
+            annotation_version: "3.0",
             allele_frequency: af || null,
             read_depth: dp || null,
             is_hotspot: classification.is_hotspot,
-            sources: gene ? ["rule_engine", annotationSource] : [],
+            sources: gene ? ["rule_engine", annot.annotation_source] : [],
           });
 
           classificationBatch.push({
@@ -1263,13 +1340,15 @@ Deno.serve(async (req) => {
             prognostic_significance: classification.prognostic_significance,
             therapeutic_significance: classification.therapeutic_significance,
             requires_manual_review: classification.requires_manual_review,
-            rationale_json: classification.rationale_json,
+            rationale_json: {
+              ...classification.rationale_json,
+              rsid: annot.rsid,
+              transcript: annot.transcript,
+              predicted_effect: annot.predicted_effect,
+            },
           });
 
           classifiedVariants.push({ gene, tier: classification.tier, classification, variantId });
-
-          // Track for post-ClinVar therapy computation
-          // (Therapy matching moved to after ClinVar refinement step)
         }
       }
 
@@ -1295,17 +1374,6 @@ Deno.serve(async (req) => {
 
     // ===== STEP 7: CLINVAR ANNOTATION =====
     await logStep(supabase, jobId, "clinvar_annotation", "started");
-    const clinvarCandidates = classifiedVariants
-      .filter(v => v.tier <= 3 && v.variantId && v.gene)
-      .map((v, idx) => {
-        // Find original variant data from processed chunks
-        const origVariant = variantsToProcess.find(pv => {
-          // Match by position - the variantId links back
-          return true; // We'll use the annotation data instead
-        });
-        return v;
-      });
-
     // Collect variant coordinates for ClinVar lookup (limit to 50 to respect rate limits + time)
     const MAX_CLINVAR_LOOKUPS = 50;
     const clinvarTargets: Array<{ chrom: string; pos: number; ref: string; alt: string; index: number; variantId: string }> = [];
