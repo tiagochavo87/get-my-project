@@ -390,9 +390,12 @@ function extractFullAnnotation(v: ParsedVariant, geneRefs: GeneRef[]): Extracted
     return result;
   }
 
-  // Direct INFO fields
+  // Manual entry or direct INFO fields
+  if (v.info["MANUAL_ENTRY"]) {
+    result.annotation_source = "manual_entry";
+  }
   for (const key of ["GENE", "Gene", "gene", "SYMBOL"]) {
-    if (v.info[key]) { result.gene = v.info[key]; result.annotation_source = "vcf_info_field"; break; }
+    if (v.info[key]) { result.gene = v.info[key]; if (result.annotation_source === "none") result.annotation_source = "vcf_info_field"; break; }
   }
   if (v.info["EFFECT"]) result.consequence = v.info["EFFECT"];
   if (v.info["IMPACT"]) result.predicted_effect = v.info["IMPACT"];
