@@ -659,11 +659,69 @@ function extractBiomarkers(
     });
   }
 
+  // === NEW: Drug resistance biomarkers ===
+  const ikzfVariants = classifiedVariants.filter(v => (v.gene === "IKZF1" || v.gene === "IKZF3") && v.tier <= 3);
+  if (ikzfVariants.length > 0) {
+    biomarkers.push({
+      biomarker_name: "IKZF1/IKZF3 (IMiD pathway)",
+      biomarker_type: "predictive",
+      status: "positive",
+      evidence_level: "C",
+      clinical_implication: `${ikzfVariants.map(v => v.gene).join("/")} mutation detected — may reduce IMiD efficacy by impairing cereblon-mediated degradation.`,
+      requires_confirmation: true,
+      confirmation_method: "Clinical correlation and treatment response monitoring",
+    });
+  }
+
+  const psmb5Variants = classifiedVariants.filter(v => v.gene === "PSMB5" && v.tier <= 3);
+  if (psmb5Variants.length > 0) {
+    biomarkers.push({
+      biomarker_name: "PSMB5 (Proteasome inhibitor resistance)",
+      biomarker_type: "predictive",
+      status: "positive",
+      evidence_level: "D",
+      clinical_implication: "PSMB5 mutation detected — potential resistance to bortezomib. Consider carfilzomib or class switch.",
+      requires_confirmation: true,
+      confirmation_method: "Functional assay or clinical correlation",
+    });
+  }
+
+  // === NEW: NF-kB pathway status ===
+  const nfkbGenes = ["TRAF3", "CYLD", "BIRC2", "BIRC3"];
+  const nfkbVariants = classifiedVariants.filter(v => v.gene && nfkbGenes.includes(v.gene) && v.tier <= 3);
+  if (nfkbVariants.length > 0) {
+    biomarkers.push({
+      biomarker_name: "NF-κB pathway activation",
+      biomarker_type: "prognostic",
+      status: "positive",
+      evidence_level: "C",
+      clinical_implication: `NF-κB pathway gene mutation(s) detected: ${[...new Set(nfkbVariants.map(v => v.gene))].join(", ")}. Constitutive NF-κB activation may influence proteasome inhibitor response.`,
+      requires_confirmation: false,
+      confirmation_method: null,
+    });
+  }
+
+  // === NEW: DNA damage repair status ===
+  const ddrGenes = ["ATM", "ATR", "BRCA1", "BRCA2"];
+  const ddrVariants = classifiedVariants.filter(v => v.gene && ddrGenes.includes(v.gene) && v.tier <= 3);
+  if (ddrVariants.length > 0) {
+    biomarkers.push({
+      biomarker_name: "DNA Damage Repair deficiency",
+      biomarker_type: "therapeutic",
+      status: "positive",
+      evidence_level: "D",
+      clinical_implication: `DDR gene mutation(s): ${[...new Set(ddrVariants.map(v => v.gene))].join(", ")}. Potential synthetic lethality with PARP inhibitors (investigational in MM).`,
+      requires_confirmation: true,
+      confirmation_method: "Germline vs somatic confirmation; functional DDR testing",
+    });
+  }
+
   // Translocation markers — always "not_assessed" from VCF
   for (const transloc of [
     { name: "t(4;14) / NSD2-FGFR3", type: "prognostic", implication: "Cannot assess from VCF. FISH required. Adverse prognosis if present." },
     { name: "t(11;14) / CCND1-IGH", type: "therapeutic", implication: "Cannot assess from VCF. FISH required. Venetoclax sensitivity if present." },
     { name: "t(14;16) / MAF-IGH", type: "prognostic", implication: "Cannot assess from VCF. FISH required. High-risk if present." },
+    { name: "t(14;20) / MAFB-IGH", type: "prognostic", implication: "Cannot assess from VCF. FISH required. High-risk if present." },
     { name: "del(17p)", type: "prognostic", implication: "Cannot confirm chromosomal deletion from VCF. FISH recommended." },
     { name: "gain(1q21)", type: "prognostic", implication: "Cannot assess from VCF. FISH or MLPA required. Adverse in R2-ISS." },
   ]) {
