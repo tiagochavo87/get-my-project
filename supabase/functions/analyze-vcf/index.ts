@@ -1753,7 +1753,7 @@ Deno.serve(async (req) => {
       skipped: gnomadHits === 0 ? (isGermline ? "no_candidates_or_timeout" : "somatic_with_vcf_af") : undefined,
     });
 
-    // ===== STEP 8: CLINVAR ANNOTATION =====
+    // ===== STEP 9: CLINVAR ANNOTATION =====
     await logStep(supabase, jobId, "clinvar_annotation", "started");
     // Collect variant coordinates for ClinVar lookup (limit to 50 to respect rate limits + time)
     const MAX_CLINVAR_LOOKUPS = 50;
