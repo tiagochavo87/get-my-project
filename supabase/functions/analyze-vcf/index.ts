@@ -663,6 +663,121 @@ async function batchClinVarLookup(
   return results;
 }
 
+// ============================================================
+// gnomAD POPULATION AF LOOKUP — GraphQL API (public, no key)
+// ============================================================
+interface GnomadResult {
+  af: number | null;
+  af_popmax: number | null;
+  homozygote_count: number | null;
+  source: string; // "gnomad_v4" | "gnomad_v2"
+}
+
+async function queryGnomAD(
+  chrom: string,
+  pos: number,
+  ref: string,
+  alt: string,
+  assembly: string,
+): Promise<GnomadResult | null> {
+  try {
+    const normalizedChrom = chrom.replace("chr", "");
+    // gnomAD v4 uses GRCh38, v2 uses GRCh37
+    const dataset = assembly === "GRCh38" ? "gnomad_r4" : "gnomad_r2_1";
+    const variantId = `${normalizedChrom}-${pos}-${ref}-${alt}`;
+
+    const query = `{
+      variant(variantId: "${variantId}", dataset: ${dataset}) {
+        variant_id
+        exome {
+          ac
+          an
+          homozygote_count
+          populations {
+            id
+            ac
+            an
+          }
+        }
+        genome {
+          ac
+          an
+          homozygote_count
+          populations {
+            id
+            ac
+            an
+          }
+        }
+      }
+    }`;
+
+    const resp = await fetch("https://gnomad.broadinstitute.org/api", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query }),
+      signal: AbortSignal.timeout(8000),
+    });
+
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const variant = data?.data?.variant;
+    if (!variant) return null;
+
+    // Compute overall AF from exome + genome
+    let totalAc = 0, totalAn = 0, totalHom = 0;
+    let popmaxAf = 0;
+
+    for (const src of [variant.exome, variant.genome]) {
+      if (!src) continue;
+      totalAc += src.ac || 0;
+      totalAn += src.an || 0;
+      totalHom += src.homozygote_count || 0;
+
+      // Compute popmax AF (highest AF across populations, excluding bottleneck pops)
+      const excludePops = new Set(["oth", "ami", "mid", "remaining"]);
+      for (const pop of (src.populations || [])) {
+        if (excludePops.has(pop.id) || pop.an === 0) continue;
+        const popAf = pop.ac / pop.an;
+        if (popAf > popmaxAf) popmaxAf = popAf;
+      }
+    }
+
+    const af = totalAn > 0 ? totalAc / totalAn : null;
+
+    return {
+      af,
+      af_popmax: popmaxAf > 0 ? popmaxAf : af,
+      homozygote_count: totalHom,
+      source: assembly === "GRCh38" ? "gnomad_v4" : "gnomad_v2",
+    };
+  } catch (e) {
+    console.warn("gnomAD lookup failed:", e);
+    return null;
+  }
+}
+
+// Batch gnomAD lookups with rate limiting
+async function batchGnomADLookup(
+  variants: Array<{ chrom: string; pos: number; ref: string; alt: string; index: number }>,
+  assembly: string,
+): Promise<Map<number, GnomadResult>> {
+  const results = new Map<number, GnomadResult>();
+  const BATCH_DELAY = 200; // gnomAD GraphQL is generous but be polite
+
+  for (let i = 0; i < variants.length; i++) {
+    const v = variants[i];
+    const result = await queryGnomAD(v.chrom, v.pos, v.ref, v.alt, assembly);
+    if (result) {
+      results.set(v.index, result);
+    }
+    if (i < variants.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, BATCH_DELAY));
+    }
+  }
+  return results;
+}
+
 // Map ClinVar significance to our classification system
 function mapClinVarSignificance(clinvarSig: string): {
   classification: string;
@@ -1528,7 +1643,117 @@ Deno.serve(async (req) => {
       skipped: unannotatedVariants.length === 0 ? "all_variants_annotated" : undefined,
     });
 
-    // ===== STEP 8: CLINVAR ANNOTATION =====
+    // ===== STEP 8: gnomAD POPULATION AF FILTERING (germline) =====
+    await logStep(supabase, jobId, "gnomad_filtering", "started");
+    let gnomadHits = 0;
+    let gnomadFiltered = 0;
+    let gnomadDowngrades = 0;
+    const MAX_GNOMAD_LOOKUPS = 80;
+
+    // Only run gnomAD for germline cases, or all cases where VCF lacks population AF fields
+    const isGermline = caseData.sample_type === "germline_constitutional";
+    const hasPopAfInVcf = parsed.infoFields.some(f =>
+      ["gnomAD_AF", "gnomADg_AF", "gnomADe_AF", "AF_popmax", "ExAC_AF", "1000g2015aug_all", "MAX_AF"].includes(f)
+    );
+
+    if ((isGermline || !hasPopAfInVcf) && (Date.now() - startTime) < TIMEOUT_MS - 20000) {
+      // Get tier 1-3 variants that need gnomAD lookup
+      const gnomadCandidates = classifiedVariants
+        .filter(v => v.variantId && v.tier <= 3)
+        .slice(0, MAX_GNOMAD_LOOKUPS);
+
+      if (gnomadCandidates.length > 0) {
+        const candidateIds = gnomadCandidates.map(v => v.variantId!);
+        const { data: gnomadCoords } = await supabase
+          .from("vcf_variants")
+          .select("id, chrom, pos, ref, alt")
+          .in("id", candidateIds);
+
+        if (gnomadCoords && gnomadCoords.length > 0) {
+          const gnomadTargets = gnomadCoords.map((vc: any, idx: number) => ({
+            chrom: vc.chrom,
+            pos: vc.pos,
+            ref: vc.ref,
+            alt: vc.alt,
+            index: idx,
+          }));
+
+          const gnomadResults = await batchGnomADLookup(gnomadTargets, caseData.assembly);
+
+          for (const [idx, gnomadResult] of gnomadResults.entries()) {
+            const vc = gnomadCoords[idx];
+            if (!vc) continue;
+            gnomadHits++;
+
+            // Store gnomAD AF in variant_annotations
+            const updateData: Record<string, any> = {};
+            if (gnomadResult.af !== null) {
+              updateData.allele_frequency = gnomadResult.af;
+            }
+            // Append gnomad to sources
+            await supabase.from("variant_annotations").update({
+              ...updateData,
+              sources: ["rule_engine", "gnomad", gnomadResult.source],
+            }).eq("variant_id", vc.id);
+
+            // For germline: filter out common polymorphisms (AF > 1%)
+            if (isGermline && gnomadResult.af_popmax !== null && gnomadResult.af_popmax > 0.01) {
+              gnomadFiltered++;
+              const cv = classifiedVariants.find(v => v.variantId === vc.id);
+              if (cv && !cv.classification.rationale_json?.is_high_risk_gene) {
+                // Downgrade to tier 4 / benign — common germline polymorphism
+                gnomadDowngrades++;
+                cv.tier = 4;
+                cv.classification.clinical_significance = "benign";
+                cv.classification.confidence = "high";
+                cv.classification.requires_manual_review = false;
+
+                await supabase.from("variant_classifications").update({
+                  tier: 4,
+                  clinical_significance: "benign",
+                  confidence: "high",
+                  requires_manual_review: false,
+                  rationale_json: {
+                    ...cv.classification.rationale_json,
+                    gnomad_af: gnomadResult.af,
+                    gnomad_af_popmax: gnomadResult.af_popmax,
+                    gnomad_source: gnomadResult.source,
+                    gnomad_filtered: true,
+                    gnomad_filter_reason: `Population AF (popmax=${gnomadResult.af_popmax?.toFixed(4)}) exceeds 1% threshold for germline analysis`,
+                  },
+                }).eq("variant_id", vc.id);
+              }
+            } else {
+              // Not filtered — still store gnomAD data in rationale for context
+              const cv = classifiedVariants.find(v => v.variantId === vc.id);
+              if (cv) {
+                await supabase.from("variant_classifications").update({
+                  rationale_json: {
+                    ...cv.classification.rationale_json,
+                    gnomad_af: gnomadResult.af,
+                    gnomad_af_popmax: gnomadResult.af_popmax,
+                    gnomad_homozygotes: gnomadResult.homozygote_count,
+                    gnomad_source: gnomadResult.source,
+                    gnomad_filtered: false,
+                  },
+                }).eq("variant_id", vc.id);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    await logStep(supabase, jobId, "gnomad_filtering", "completed", {
+      is_germline: isGermline,
+      has_pop_af_in_vcf: hasPopAfInVcf,
+      lookups: gnomadHits,
+      filtered_common: gnomadFiltered,
+      tier_downgrades: gnomadDowngrades,
+      skipped: gnomadHits === 0 ? (isGermline ? "no_candidates_or_timeout" : "somatic_with_vcf_af") : undefined,
+    });
+
+    // ===== STEP 9: CLINVAR ANNOTATION =====
     await logStep(supabase, jobId, "clinvar_annotation", "started");
     // Collect variant coordinates for ClinVar lookup (limit to 50 to respect rate limits + time)
     const MAX_CLINVAR_LOOKUPS = 50;
@@ -1642,7 +1867,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ===== STEP 9: THERAPIES =====
+    // ===== STEP 10: THERAPIES =====
     // Re-compute therapies based on ClinVar-refined classifications
     await logStep(supabase, jobId, "therapy_matching", "started");
 
@@ -1684,7 +1909,7 @@ Deno.serve(async (req) => {
     }
     await logStep(supabase, jobId, "therapy_matching", "completed", { options_found: therapyInserts.length });
 
-    // ===== STEP 9: BIOMARKERS =====
+    // ===== STEP 11: BIOMARKERS =====
     await logStep(supabase, jobId, "biomarker_extraction", "started");
     const biomarkers = extractBiomarkers(classifiedVariants, qc);
     // Store biomarkers
@@ -1708,7 +1933,7 @@ Deno.serve(async (req) => {
       not_assessed: biomarkers.filter(b => b.status === "not_assessed").length,
     });
 
-    // ===== STEP 10: INTERPRETATION =====
+    // ===== STEP 12: INTERPRETATION =====
     await logStep(supabase, jobId, "interpretation", "started");
     const molecularSummary = generateMolecularSummary(qc, classifiedVariants, biomarkers, caseData.sample_type);
 
@@ -1731,7 +1956,7 @@ Deno.serve(async (req) => {
     if (!caseData.riss_stage) limitations.push("R-ISS stage not provided — risk stratification incomplete.");
     if (caseData.sample_type === "somatic_tumor") limitations.push("Germline filtering not performed (somatic-only sample).");
     if (caseData.sample_type === "tumor_normal_paired") limitations.push("Tumor-normal paired analysis requires validated somatic caller output.");
-    limitations.push("Gene annotation uses positional lookup, VCF INFO fields, and ClinVar variant-level lookup. VEP/gnomAD not yet integrated.");
+    limitations.push("Gene annotation uses positional lookup, VCF INFO fields, VEP REST API, ClinVar SPDI, and gnomAD GraphQL. Some variants may lack full annotation if external APIs are unreachable.");
 
     const manualReviewReasons: string[] = [];
     if (flags.manual_review_required) manualReviewReasons.push("One or more variants require manual curation review.");
