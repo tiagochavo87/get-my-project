@@ -1237,7 +1237,7 @@ Deno.serve(async (req) => {
     await supabase.from("uploaded_files").insert({
       case_id,
       sample_id: sample?.id || null,
-      user_id: user.id,
+      user_id: userId,
       filename: caseData.file_name,
       storage_path: caseData.file_path,
       file_type: caseData.file_name.endsWith(".gz") ? "vcf.gz" : "vcf",
