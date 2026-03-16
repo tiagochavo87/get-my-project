@@ -94,6 +94,80 @@ const MM_THERAPEUTIC_MAP: Record<string, TherapyEntry[]> = {
     approved: { us: "investigational", eu: "investigational", brazil: "investigational" },
     line: "any",
   }],
+  // === NEW: Drug resistance markers ===
+  IKZF1: [{
+    therapy: "Reduced IMiD sensitivity — consider alternative backbone",
+    evidence: "C",
+    rationale: "IKZF1 mutations may impair IMiD-mediated degradation of Ikaros, reducing lenalidomide/pomalidomide efficacy.",
+    approved: { us: "clinical guidance", eu: "clinical guidance", brazil: "clinical guidance" },
+    line: "any",
+  }],
+  IKZF3: [{
+    therapy: "Reduced IMiD sensitivity — consider alternative backbone",
+    evidence: "C",
+    rationale: "IKZF3 (Aiolos) mutations may confer resistance to IMiD class agents.",
+    approved: { us: "clinical guidance", eu: "clinical guidance", brazil: "clinical guidance" },
+    line: "any",
+  }],
+  PSMB5: [{
+    therapy: "Potential proteasome inhibitor resistance (Bortezomib/Carfilzomib)",
+    evidence: "D",
+    rationale: "PSMB5 mutations in the bortezomib-binding pocket can reduce proteasome inhibitor binding affinity. Consider carfilzomib or switch class.",
+    approved: { us: "clinical guidance", eu: "clinical guidance", brazil: "clinical guidance" },
+    line: "any",
+  }],
+  // === NEW: Actionable pathway targets ===
+  BCL2: [{
+    therapy: "Venetoclax (BCL-2 inhibitor)",
+    evidence: "C",
+    rationale: "BCL-2 overexpression or gain-of-function mutations may sensitize to venetoclax, especially in t(11;14) context.",
+    approved: { us: "off-label", eu: "off-label", brazil: "off-label" },
+    line: "2L+",
+  }],
+  ATM: [{
+    therapy: "PARP inhibitor sensitivity (investigational in MM)",
+    evidence: "D",
+    rationale: "ATM loss-of-function creates synthetic lethal vulnerability to PARP inhibitors. Investigational in MM.",
+    approved: { us: "investigational", eu: "investigational", brazil: "investigational" },
+    line: "3L+",
+  }],
+  ATR: [{
+    therapy: "ATR inhibitor (investigational)",
+    evidence: "D",
+    rationale: "ATR pathway defects may sensitize to ATR or CHK1 inhibitors. Early phase trials in hematologic malignancies.",
+    approved: { us: "investigational", eu: "investigational", brazil: "investigational" },
+    line: "3L+",
+  }],
+  // === NEW: NF-kB pathway ===
+  TRAF3: [{
+    therapy: "NF-kB pathway-targeted therapy (investigational)",
+    evidence: "D",
+    rationale: "TRAF3 loss leads to constitutive NF-kB activation. Proteasome inhibitors partially target this pathway.",
+    approved: { us: "clinical guidance", eu: "clinical guidance", brazil: "clinical guidance" },
+    line: "any",
+  }],
+  CYLD: [{
+    therapy: "NF-kB pathway activation — proteasome inhibitor may retain benefit",
+    evidence: "D",
+    rationale: "CYLD loss activates NF-kB signaling. Bortezomib/carfilzomib target NF-kB via IκBα stabilization.",
+    approved: { us: "clinical guidance", eu: "clinical guidance", brazil: "clinical guidance" },
+    line: "any",
+  }],
+  // === NEW: Epigenetic targets ===
+  KDM6A: [{
+    therapy: "EZH2 inhibitor (Tazemetostat — investigational in MM)",
+    evidence: "D",
+    rationale: "KDM6A loss may create dependence on EZH2-mediated gene silencing. Tazemetostat is FDA-approved for other indications.",
+    approved: { us: "investigational", eu: "investigational", brazil: "investigational" },
+    line: "3L+",
+  }],
+  NSD2: [{
+    therapy: "Histone methyltransferase inhibitor (investigational)",
+    evidence: "D",
+    rationale: "NSD2/MMSET overexpression via t(4;14) drives H3K36me2. Targeted agents in preclinical development.",
+    approved: { us: "investigational", eu: "investigational", brazil: "investigational" },
+    line: "3L+",
+  }],
 };
 
 // ============================================================
@@ -585,11 +659,69 @@ function extractBiomarkers(
     });
   }
 
+  // === NEW: Drug resistance biomarkers ===
+  const ikzfVariants = classifiedVariants.filter(v => (v.gene === "IKZF1" || v.gene === "IKZF3") && v.tier <= 3);
+  if (ikzfVariants.length > 0) {
+    biomarkers.push({
+      biomarker_name: "IKZF1/IKZF3 (IMiD pathway)",
+      biomarker_type: "predictive",
+      status: "positive",
+      evidence_level: "C",
+      clinical_implication: `${ikzfVariants.map(v => v.gene).join("/")} mutation detected — may reduce IMiD efficacy by impairing cereblon-mediated degradation.`,
+      requires_confirmation: true,
+      confirmation_method: "Clinical correlation and treatment response monitoring",
+    });
+  }
+
+  const psmb5Variants = classifiedVariants.filter(v => v.gene === "PSMB5" && v.tier <= 3);
+  if (psmb5Variants.length > 0) {
+    biomarkers.push({
+      biomarker_name: "PSMB5 (Proteasome inhibitor resistance)",
+      biomarker_type: "predictive",
+      status: "positive",
+      evidence_level: "D",
+      clinical_implication: "PSMB5 mutation detected — potential resistance to bortezomib. Consider carfilzomib or class switch.",
+      requires_confirmation: true,
+      confirmation_method: "Functional assay or clinical correlation",
+    });
+  }
+
+  // === NEW: NF-kB pathway status ===
+  const nfkbGenes = ["TRAF3", "CYLD", "BIRC2", "BIRC3"];
+  const nfkbVariants = classifiedVariants.filter(v => v.gene && nfkbGenes.includes(v.gene) && v.tier <= 3);
+  if (nfkbVariants.length > 0) {
+    biomarkers.push({
+      biomarker_name: "NF-κB pathway activation",
+      biomarker_type: "prognostic",
+      status: "positive",
+      evidence_level: "C",
+      clinical_implication: `NF-κB pathway gene mutation(s) detected: ${[...new Set(nfkbVariants.map(v => v.gene))].join(", ")}. Constitutive NF-κB activation may influence proteasome inhibitor response.`,
+      requires_confirmation: false,
+      confirmation_method: null,
+    });
+  }
+
+  // === NEW: DNA damage repair status ===
+  const ddrGenes = ["ATM", "ATR", "BRCA1", "BRCA2"];
+  const ddrVariants = classifiedVariants.filter(v => v.gene && ddrGenes.includes(v.gene) && v.tier <= 3);
+  if (ddrVariants.length > 0) {
+    biomarkers.push({
+      biomarker_name: "DNA Damage Repair deficiency",
+      biomarker_type: "therapeutic",
+      status: "positive",
+      evidence_level: "D",
+      clinical_implication: `DDR gene mutation(s): ${[...new Set(ddrVariants.map(v => v.gene))].join(", ")}. Potential synthetic lethality with PARP inhibitors (investigational in MM).`,
+      requires_confirmation: true,
+      confirmation_method: "Germline vs somatic confirmation; functional DDR testing",
+    });
+  }
+
   // Translocation markers — always "not_assessed" from VCF
   for (const transloc of [
     { name: "t(4;14) / NSD2-FGFR3", type: "prognostic", implication: "Cannot assess from VCF. FISH required. Adverse prognosis if present." },
     { name: "t(11;14) / CCND1-IGH", type: "therapeutic", implication: "Cannot assess from VCF. FISH required. Venetoclax sensitivity if present." },
     { name: "t(14;16) / MAF-IGH", type: "prognostic", implication: "Cannot assess from VCF. FISH required. High-risk if present." },
+    { name: "t(14;20) / MAFB-IGH", type: "prognostic", implication: "Cannot assess from VCF. FISH required. High-risk if present." },
     { name: "del(17p)", type: "prognostic", implication: "Cannot confirm chromosomal deletion from VCF. FISH recommended." },
     { name: "gain(1q21)", type: "prognostic", implication: "Cannot assess from VCF. FISH or MLPA required. Adverse in R2-ISS." },
   ]) {
@@ -640,12 +772,36 @@ function generateMolecularSummary(
   const tier1 = classifiedVariants.filter((v) => v.tier === 1);
   const tier2 = classifiedVariants.filter((v) => v.tier === 2);
   const highRiskGenes = tier1.map((v) => v.gene).filter(Boolean);
+  const allRelevantGenes = new Set(classifiedVariants.filter(v => v.tier <= 2).map(v => v.gene).filter(Boolean));
 
   let riskCategory: "high" | "standard" | "favorable" | "insufficient_data" = "standard";
   if (tier1.length > 0) riskCategory = "high";
   if (classifiedVariants.filter(v => v.tier <= 3).length === 0) riskCategory = "insufficient_data";
 
+  // === DOUBLE-HIT / MULTI-HIT DETECTION ===
+  const doubleHitPairs = [
+    { genes: ["TP53", "RB1"], label: "TP53 + RB1 (double-hit tumor suppressor)", risk: "very_high" },
+    { genes: ["TP53", "DIS3"], label: "TP53 + DIS3 (double high-risk)", risk: "very_high" },
+    { genes: ["KRAS", "NRAS"], label: "KRAS + NRAS (dual RAS — rare, verify)", risk: "high" },
+    { genes: ["TP53", "KRAS"], label: "TP53 + KRAS (high-risk + MAPK)", risk: "very_high" },
+    { genes: ["TP53", "NRAS"], label: "TP53 + NRAS (high-risk + MAPK)", risk: "very_high" },
+  ];
+
+  const detectedDoubleHits: string[] = [];
+  for (const pair of doubleHitPairs) {
+    if (pair.genes.every(g => allRelevantGenes.has(g))) {
+      detectedDoubleHits.push(pair.label);
+      if (pair.risk === "very_high") riskCategory = "high";
+    }
+  }
+
   const summaryParts: string[] = [];
+
+  // Double-hit alert first
+  if (detectedDoubleHits.length > 0) {
+    summaryParts.push(`⚠ MULTI-HIT DETECTED: ${detectedDoubleHits.join("; ")}. This combination is associated with ultra-high-risk disease and very poor prognosis.`);
+  }
+
   if (tier1.length > 0) {
     summaryParts.push(`${tier1.length} Tier I variant(s) identified in high-risk gene(s): ${[...new Set(highRiskGenes)].join(", ")}.`);
   }
@@ -656,8 +812,14 @@ function generateMolecularSummary(
     summaryParts.push("No Tier I or Tier II variants identified from current analysis.");
   }
 
+  // Drug resistance alerts
+  const resistanceMarkers = biomarkers.filter(b => b.status === "positive" && b.biomarker_type === "predictive");
+  if (resistanceMarkers.length > 0) {
+    summaryParts.push(`Drug resistance signals: ${resistanceMarkers.map(b => b.biomarker_name).join("; ")}.`);
+  }
+
   // Biomarker-driven additions
-  const positiveBiomarkers = biomarkers.filter(b => b.status === "positive");
+  const positiveBiomarkers = biomarkers.filter(b => b.status === "positive" && b.biomarker_type !== "predictive");
   if (positiveBiomarkers.length > 0) {
     summaryParts.push(`Active biomarkers: ${positiveBiomarkers.map(b => b.biomarker_name).join("; ")}.`);
   }
@@ -675,12 +837,20 @@ function generateMolecularSummary(
     summaryParts.push("Analysis context: tumor-normal paired. Germline variants should be subtracted by caller.");
   }
 
+  const highRiskFeatures = [
+    ...highRiskGenes.map((g) => `${g} mutation identified — high-risk per IMWG guidelines`),
+    ...detectedDoubleHits.map(d => `Multi-hit: ${d}`),
+    ...resistanceMarkers.map(r => `Drug resistance: ${r.biomarker_name}`),
+  ];
+
   return {
     molecular_prognosis: summaryParts.join(" "),
     risk_category: riskCategory,
-    high_risk_features: highRiskGenes.map((g) => `${g} mutation identified — high-risk per IMWG guidelines`),
+    high_risk_features: highRiskFeatures,
     favorable_features: [] as string[],
-    source: "deterministic_rule_engine_v2",
+    double_hits: detectedDoubleHits,
+    resistance_markers: resistanceMarkers.map(r => r.biomarker_name),
+    source: "deterministic_rule_engine_v2.1",
     disclaimer: "Generated by rule-based engine. Not AI-inferred. All findings require physician review.",
   };
 }
