@@ -94,6 +94,80 @@ const MM_THERAPEUTIC_MAP: Record<string, TherapyEntry[]> = {
     approved: { us: "investigational", eu: "investigational", brazil: "investigational" },
     line: "any",
   }],
+  // === NEW: Drug resistance markers ===
+  IKZF1: [{
+    therapy: "Reduced IMiD sensitivity — consider alternative backbone",
+    evidence: "C",
+    rationale: "IKZF1 mutations may impair IMiD-mediated degradation of Ikaros, reducing lenalidomide/pomalidomide efficacy.",
+    approved: { us: "clinical guidance", eu: "clinical guidance", brazil: "clinical guidance" },
+    line: "any",
+  }],
+  IKZF3: [{
+    therapy: "Reduced IMiD sensitivity — consider alternative backbone",
+    evidence: "C",
+    rationale: "IKZF3 (Aiolos) mutations may confer resistance to IMiD class agents.",
+    approved: { us: "clinical guidance", eu: "clinical guidance", brazil: "clinical guidance" },
+    line: "any",
+  }],
+  PSMB5: [{
+    therapy: "Potential proteasome inhibitor resistance (Bortezomib/Carfilzomib)",
+    evidence: "D",
+    rationale: "PSMB5 mutations in the bortezomib-binding pocket can reduce proteasome inhibitor binding affinity. Consider carfilzomib or switch class.",
+    approved: { us: "clinical guidance", eu: "clinical guidance", brazil: "clinical guidance" },
+    line: "any",
+  }],
+  // === NEW: Actionable pathway targets ===
+  BCL2: [{
+    therapy: "Venetoclax (BCL-2 inhibitor)",
+    evidence: "C",
+    rationale: "BCL-2 overexpression or gain-of-function mutations may sensitize to venetoclax, especially in t(11;14) context.",
+    approved: { us: "off-label", eu: "off-label", brazil: "off-label" },
+    line: "2L+",
+  }],
+  ATM: [{
+    therapy: "PARP inhibitor sensitivity (investigational in MM)",
+    evidence: "D",
+    rationale: "ATM loss-of-function creates synthetic lethal vulnerability to PARP inhibitors. Investigational in MM.",
+    approved: { us: "investigational", eu: "investigational", brazil: "investigational" },
+    line: "3L+",
+  }],
+  ATR: [{
+    therapy: "ATR inhibitor (investigational)",
+    evidence: "D",
+    rationale: "ATR pathway defects may sensitize to ATR or CHK1 inhibitors. Early phase trials in hematologic malignancies.",
+    approved: { us: "investigational", eu: "investigational", brazil: "investigational" },
+    line: "3L+",
+  }],
+  // === NEW: NF-kB pathway ===
+  TRAF3: [{
+    therapy: "NF-kB pathway-targeted therapy (investigational)",
+    evidence: "D",
+    rationale: "TRAF3 loss leads to constitutive NF-kB activation. Proteasome inhibitors partially target this pathway.",
+    approved: { us: "clinical guidance", eu: "clinical guidance", brazil: "clinical guidance" },
+    line: "any",
+  }],
+  CYLD: [{
+    therapy: "NF-kB pathway activation — proteasome inhibitor may retain benefit",
+    evidence: "D",
+    rationale: "CYLD loss activates NF-kB signaling. Bortezomib/carfilzomib target NF-kB via IκBα stabilization.",
+    approved: { us: "clinical guidance", eu: "clinical guidance", brazil: "clinical guidance" },
+    line: "any",
+  }],
+  // === NEW: Epigenetic targets ===
+  KDM6A: [{
+    therapy: "EZH2 inhibitor (Tazemetostat — investigational in MM)",
+    evidence: "D",
+    rationale: "KDM6A loss may create dependence on EZH2-mediated gene silencing. Tazemetostat is FDA-approved for other indications.",
+    approved: { us: "investigational", eu: "investigational", brazil: "investigational" },
+    line: "3L+",
+  }],
+  NSD2: [{
+    therapy: "Histone methyltransferase inhibitor (investigational)",
+    evidence: "D",
+    rationale: "NSD2/MMSET overexpression via t(4;14) drives H3K36me2. Targeted agents in preclinical development.",
+    approved: { us: "investigational", eu: "investigational", brazil: "investigational" },
+    line: "3L+",
+  }],
 };
 
 // ============================================================
