@@ -36,7 +36,10 @@ export default function NewCase() {
   const [creatinine, setCreatinine] = useState('');
   const [clinicalNotes, setClinicalNotes] = useState('');
 
-  const isVcfFile = (f: File) => f.name.endsWith('.vcf') || f.name.endsWith('.vcf.gz');
+  const isVcfFile = (f: File) => {
+    const name = f.name.toLowerCase();
+    return name.endsWith('.vcf') || name.endsWith('.vcf.gz') || name.endsWith('.gvcf') || name.endsWith('.gvcf.gz');
+  };
 
   const handleFileDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -45,7 +48,7 @@ export default function NewCase() {
     if (f && isVcfFile(f)) {
       setFile(f);
     } else {
-      toast.error('Please upload a .vcf or .vcf.gz file');
+      toast.error('Please upload a .vcf, .vcf.gz, .gvcf, or .gvcf.gz file');
     }
   };
 
@@ -178,7 +181,7 @@ export default function NewCase() {
             <Card>
               <CardHeader className="pb-3">
                 <CardTitle className="text-base">VCF File Upload</CardTitle>
-                <CardDescription>Accepts .vcf or .vcf.gz from exome or whole genome sequencing</CardDescription>
+                <CardDescription>Accepts .vcf, .vcf.gz, .gvcf, .gvcf.gz from exome or whole genome sequencing</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 {/* Main VCF */}
@@ -211,7 +214,7 @@ export default function NewCase() {
                     <input
                       id="vcf-input"
                       type="file"
-                      accept=".vcf,.vcf.gz"
+                      accept=".vcf,.vcf.gz,.gvcf,.gvcf.gz"
                       className="hidden"
                       onChange={handleFileSelect}
                     />
@@ -257,7 +260,7 @@ export default function NewCase() {
                     <input
                       id="sv-vcf-input"
                       type="file"
-                      accept=".vcf,.vcf.gz"
+                      accept=".vcf,.vcf.gz,.gvcf,.gvcf.gz"
                       className="hidden"
                       onChange={handleSvFileSelect}
                     />
