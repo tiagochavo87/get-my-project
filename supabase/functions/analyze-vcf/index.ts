@@ -1956,7 +1956,7 @@ Deno.serve(async (req) => {
     if (!caseData.riss_stage) limitations.push("R-ISS stage not provided — risk stratification incomplete.");
     if (caseData.sample_type === "somatic_tumor") limitations.push("Germline filtering not performed (somatic-only sample).");
     if (caseData.sample_type === "tumor_normal_paired") limitations.push("Tumor-normal paired analysis requires validated somatic caller output.");
-    limitations.push("Gene annotation uses positional lookup, VCF INFO fields, and ClinVar variant-level lookup. VEP/gnomAD not yet integrated.");
+    limitations.push("Gene annotation uses positional lookup, VCF INFO fields, VEP REST API, ClinVar SPDI, and gnomAD GraphQL. Some variants may lack full annotation if external APIs are unreachable.");
 
     const manualReviewReasons: string[] = [];
     if (flags.manual_review_required) manualReviewReasons.push("One or more variants require manual curation review.");
