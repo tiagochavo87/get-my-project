@@ -61,6 +61,21 @@ export default {
           border: "hsl(var(--sidebar-border))",
           ring: "hsl(var(--sidebar-ring))",
         },
+        clinical: {
+          "high-risk": "hsl(var(--clinical-high-risk))",
+          "moderate-risk": "hsl(var(--clinical-moderate-risk))",
+          "low-risk": "hsl(var(--clinical-low-risk))",
+          neutral: "hsl(var(--clinical-neutral))",
+          vus: "hsl(var(--clinical-vus))",
+          benign: "hsl(var(--clinical-benign))",
+          pathogenic: "hsl(var(--clinical-pathogenic))",
+        },
+        tier: {
+          1: "hsl(var(--tier-1))",
+          2: "hsl(var(--tier-2))",
+          3: "hsl(var(--tier-3))",
+          4: "hsl(var(--tier-4))",
+        },
       },
       borderRadius: {
         lg: "var(--radius)",
