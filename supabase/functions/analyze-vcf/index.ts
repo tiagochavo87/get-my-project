@@ -1171,7 +1171,7 @@ Deno.serve(async (req) => {
     if (caseErr || !caseData) {
       return new Response(JSON.stringify({ error: "Case not found" }), { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
-    if (caseData.user_id !== user.id) {
+    if (caseData.user_id !== userId) {
       return new Response(JSON.stringify({ error: "Forbidden" }), { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
