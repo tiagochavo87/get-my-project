@@ -1343,6 +1343,21 @@ Deno.serve(async (req) => {
     });
   } catch (err) {
     console.error("Analysis error:", err);
+    // Try to mark the case as failed if we have enough context
+    try {
+      const { case_id } = await req.clone().json().catch(() => ({}));
+      if (case_id) {
+        const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+        const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+        const supabase = createClient(supabaseUrl, serviceKey);
+        await supabase.from("cases").update({ status: "failed" }).eq("id", case_id);
+        await supabase.from("analysis_jobs").update({
+          status: "failed",
+          error_message: String(err),
+          completed_at: new Date().toISOString(),
+        }).eq("case_id", case_id).eq("status", "running");
+      }
+    } catch (_) { /* best effort */ }
     return new Response(JSON.stringify({ error: "Internal server error", details: String(err) }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
