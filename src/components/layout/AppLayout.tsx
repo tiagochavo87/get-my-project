@@ -1,8 +1,8 @@
-import { ReactNode, useState } from 'react';
+import { ReactNode, useState, useEffect } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { 
   LayoutDashboard, FilePlus, LogOut, Menu, X, Shield, 
-  User, ChevronDown 
+  User, ChevronDown, Settings
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -13,9 +13,10 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { useAuth } from '@/contexts/AuthContext';
+import { supabase } from '@/integrations/supabase/client';
 import logo from '@/assets/logo.jpg';
 
-const navItems = [
+const baseNavItems = [
   { label: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
   { label: 'New Case', path: '/new-case', icon: FilePlus },
 ];
@@ -25,6 +26,24 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const { user, signOut } = useAuth();
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  useEffect(() => {
+    if (!user) return;
+    supabase
+      .from('user_roles' as any)
+      .select('role')
+      .eq('user_id', user.id)
+      .eq('role', 'admin')
+      .then(({ data }) => {
+        setIsAdmin(Array.isArray(data) && data.length > 0);
+      });
+  }, [user]);
+
+  const navItems = [
+    ...baseNavItems,
+    ...(isAdmin ? [{ label: 'Admin', path: '/admin', icon: Settings }] : []),
+  ];
 
   const handleSignOut = async () => {
     await signOut();
