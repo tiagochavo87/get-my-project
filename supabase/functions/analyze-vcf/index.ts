@@ -1035,12 +1035,32 @@ Deno.serve(async (req) => {
 
     // ===== STEP 6: FILTER, ANNOTATE, CLASSIFY =====
     await logStep(supabase, jobId, "classifying", "started");
-    const variantsToProcess = parsed.variants.slice(0, 50000);
+
+    // Adaptive variant cap based on edge function timeout (~55s safety margin)
+    const startTime = Date.now();
+    const TIMEOUT_MS = 45000; // 45s safety margin (edge fn ~60s limit)
+    const MAX_VARIANTS = 30000; // Hard cap
+    const variantsToProcess = parsed.variants.slice(0, MAX_VARIANTS);
+    const wasLimited = parsed.variants.length > MAX_VARIANTS;
+
     const classifiedVariants: { gene: string | null; tier: number; classification: ReturnType<typeof classifyVariant>; variantId?: string }[] = [];
     const therapyInserts: any[] = [];
     const CHUNK_SIZE = 500;
+    let processedCount = 0;
+    let timeoutReached = false;
 
     for (let i = 0; i < variantsToProcess.length; i += CHUNK_SIZE) {
+      // Check time budget before each chunk
+      if (Date.now() - startTime > TIMEOUT_MS) {
+        timeoutReached = true;
+        await logStep(supabase, jobId, "classifying", "completed", {
+          warning: "Time budget exceeded — partial processing",
+          processed: processedCount,
+          total: variantsToProcess.length,
+        });
+        break;
+      }
+
       const chunk = variantsToProcess.slice(i, i + CHUNK_SIZE);
 
       // Batch insert variants
@@ -1149,14 +1169,18 @@ Deno.serve(async (req) => {
       if (classificationBatch.length > 0) {
         await supabase.from("variant_classifications").insert(classificationBatch);
       }
+      processedCount += chunk.length;
     }
 
-    await logStep(supabase, jobId, "classifying", "completed", {
-      total_classified: classifiedVariants.length,
-      tier1: classifiedVariants.filter(v => v.tier === 1).length,
-      tier2: classifiedVariants.filter(v => v.tier === 2).length,
-      tier3: classifiedVariants.filter(v => v.tier === 3).length,
-    });
+    if (!timeoutReached) {
+      await logStep(supabase, jobId, "classifying", "completed", {
+        total_classified: classifiedVariants.length,
+        processed: processedCount,
+        tier1: classifiedVariants.filter(v => v.tier === 1).length,
+        tier2: classifiedVariants.filter(v => v.tier === 2).length,
+        tier3: classifiedVariants.filter(v => v.tier === 3).length,
+      });
+    }
 
     // ===== STEP 7: THERAPIES =====
     await logStep(supabase, jobId, "therapy_matching", "started");
@@ -1201,13 +1225,18 @@ Deno.serve(async (req) => {
     };
 
     const limitations: string[] = [...qc.warnings];
+    if (timeoutReached) {
+      limitations.push(`Processing time limit reached — only ${processedCount} of ${variantsToProcess.length} variants were analyzed. Clinically relevant variants in unprocessed regions may be missed.`);
+      flags.manual_review_required = true;
+    }
+    if (wasLimited) {
+      limitations.push(`VCF contains ${parsed.variants.length} variants. Only the first ${MAX_VARIANTS} were processed. Consider filtering the VCF before upload.`);
+      flags.manual_review_required = true;
+    }
     if (!caseData.riss_stage) limitations.push("R-ISS stage not provided — risk stratification incomplete.");
     if (caseData.sample_type === "somatic_tumor") limitations.push("Germline filtering not performed (somatic-only sample).");
     if (caseData.sample_type === "tumor_normal_paired") limitations.push("Tumor-normal paired analysis requires validated somatic caller output.");
     limitations.push("Gene annotation is based on positional lookup and VCF INFO fields. External annotation (VEP/ClinVar) not yet integrated.");
-    // TODO: Integrate ClinVar API for variant-level evidence
-    // TODO: Integrate COSMIC for mutation frequency in MM
-    // TODO: Integrate gnomAD for population frequency filtering
 
     const manualReviewReasons: string[] = [];
     if (flags.manual_review_required) manualReviewReasons.push("One or more variants require manual curation review.");
@@ -1314,6 +1343,21 @@ Deno.serve(async (req) => {
     });
   } catch (err) {
     console.error("Analysis error:", err);
+    // Try to mark the case as failed if we have enough context
+    try {
+      const { case_id } = await req.clone().json().catch(() => ({}));
+      if (case_id) {
+        const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+        const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+        const supabase = createClient(supabaseUrl, serviceKey);
+        await supabase.from("cases").update({ status: "failed" }).eq("id", case_id);
+        await supabase.from("analysis_jobs").update({
+          status: "failed",
+          error_message: String(err),
+          completed_at: new Date().toISOString(),
+        }).eq("case_id", case_id).eq("status", "running");
+      }
+    } catch (_) { /* best effort */ }
     return new Response(JSON.stringify({ error: "Internal server error", details: String(err) }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
