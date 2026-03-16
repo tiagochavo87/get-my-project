@@ -525,7 +525,7 @@ function lookupGeneByPosition(chrom: string, pos: number, geneRefs: GeneRef[]): 
 // QC SERVICE
 // ============================================================
 function generateQC(parsed: VcfParseResult, expectedAssembly: string) {
-  const { variants, assemblyDetected, infoFields, formatFields } = parsed;
+  const { variants, assemblyDetected, infoFields, formatFields, isGvcf, gvcfRefBlocksSkipped } = parsed;
   const total = variants.length;
   const passed = variants.filter((v) => v.filter === "PASS" || v.filter === ".").length;
   const failed = total - passed;
