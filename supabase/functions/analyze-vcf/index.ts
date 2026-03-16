@@ -1421,7 +1421,114 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ===== STEP 7: CLINVAR ANNOTATION =====
+    // ===== STEP 7: VEP ANNOTATION (for unannotated variants) =====
+    await logStep(supabase, jobId, "vep_annotation", "started");
+    const unannotatedVariants = classifiedVariants.filter(
+      v => v.variantId && v.tier <= 3 && (!v.classification.rationale_json?.predicted_effect || v.classification.rationale_json?.predicted_effect === null)
+    );
+    let vepHits = 0;
+    const MAX_VEP_BATCH = 100; // Ensembl VEP POST endpoint supports up to 200 per batch
+
+    if (unannotatedVariants.length > 0 && (Date.now() - startTime) < TIMEOUT_MS - 15000) {
+      // Fetch coordinates for unannotated variants
+      const unannotatedIds = unannotatedVariants.slice(0, MAX_VEP_BATCH).map(v => v.variantId!);
+      const { data: unannotatedCoords } = await supabase
+        .from("vcf_variants")
+        .select("id, chrom, pos, ref, alt")
+        .in("id", unannotatedIds);
+
+      if (unannotatedCoords && unannotatedCoords.length > 0) {
+        // Build VEP batch input: "chrom pos pos ref/alt" for SNVs, or HGVS-like for indels
+        const vepInputs = unannotatedCoords.map((vc: any) => {
+          const chrom = vc.chrom.replace("chr", "");
+          if (vc.ref.length === 1 && vc.alt.length === 1) {
+            // SNV
+            return `${chrom} ${vc.pos} ${vc.pos} ${vc.ref}/${vc.alt} 1`;
+          } else if (vc.ref.length > vc.alt.length) {
+            // Deletion
+            const delStart = vc.pos + 1;
+            const delEnd = vc.pos + vc.ref.length - 1;
+            return `${chrom} ${delStart} ${delEnd} ${vc.ref.substring(1) || "-"}/${vc.alt.substring(1) || "-"} 1`;
+          } else {
+            // Insertion
+            return `${chrom} ${vc.pos} ${vc.pos} -/${vc.alt.substring(vc.ref.length)} 1`;
+          }
+        });
+
+        try {
+          const vepAssembly = caseData.assembly === "GRCh38" ? "grch38" : "grch37";
+          const vepUrl = caseData.assembly === "GRCh38"
+            ? "https://rest.ensembl.org/vep/homo_sapiens/region"
+            : "https://grch37.rest.ensembl.org/vep/homo_sapiens/region";
+
+          const vepResp = await fetch(vepUrl, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Accept": "application/json",
+            },
+            body: JSON.stringify({ variants: vepInputs }),
+            signal: AbortSignal.timeout(20000),
+          });
+
+          if (vepResp.ok) {
+            const vepResults = await vepResp.json();
+
+            for (const vr of vepResults) {
+              // Match back to our variant by position
+              const inputParts = vr.input?.split(" ") || [];
+              const vepChrom = inputParts[0];
+              const vepPos = parseInt(inputParts[1]);
+
+              // Find matching variant
+              const matchedCoord = unannotatedCoords.find((vc: any) => {
+                const vcChrom = vc.chrom.replace("chr", "");
+                return vcChrom === vepChrom && vc.pos === vepPos;
+              });
+              if (!matchedCoord) continue;
+
+              // Get the most severe consequence
+              const tc = vr.most_severe_consequence;
+              const transcriptConsequences = vr.transcript_consequences || [];
+              // Pick the canonical transcript or first one
+              const bestTc = transcriptConsequences.find((t: any) => t.canonical === 1) || transcriptConsequences[0];
+
+              if (bestTc) {
+                vepHits++;
+                // Update annotation in DB
+                await supabase.from("variant_annotations").update({
+                  gene_symbol: bestTc.gene_symbol || null,
+                  consequence: tc || bestTc.consequence_terms?.join(",") || null,
+                  hgvs_c: bestTc.hgvsc || null,
+                  hgvs_p: bestTc.hgvsp || null,
+                  annotation_source: "ensembl_vep_rest",
+                  annotation_version: "vep_rest_v1",
+                }).eq("variant_id", matchedCoord.id);
+
+                // Update the local classified variant gene if missing
+                const cv = classifiedVariants.find(v => v.variantId === matchedCoord.id);
+                if (cv && !cv.gene && bestTc.gene_symbol) {
+                  cv.gene = bestTc.gene_symbol;
+                }
+              }
+            }
+          } else {
+            const errText = await vepResp.text();
+            console.warn("VEP API error:", vepResp.status, errText);
+          }
+        } catch (vepErr) {
+          console.warn("VEP annotation failed:", vepErr);
+        }
+      }
+    }
+
+    await logStep(supabase, jobId, "vep_annotation", "completed", {
+      unannotated_count: unannotatedVariants.length,
+      vep_hits: vepHits,
+      skipped: unannotatedVariants.length === 0 ? "all_variants_annotated" : undefined,
+    });
+
+    // ===== STEP 8: CLINVAR ANNOTATION =====
     await logStep(supabase, jobId, "clinvar_annotation", "started");
     // Collect variant coordinates for ClinVar lookup (limit to 50 to respect rate limits + time)
     const MAX_CLINVAR_LOOKUPS = 50;
