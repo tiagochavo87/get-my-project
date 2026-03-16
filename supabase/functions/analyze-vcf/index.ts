@@ -434,6 +434,131 @@ function passesQualityFilter(v: ParsedVariant, config: FilterConfig): { passes: 
 }
 
 // ============================================================
+// CLINVAR LOOKUP — NCBI E-utilities (public, no API key)
+// ============================================================
+interface ClinVarResult {
+  significance: string;
+  review_status: string;
+  variation_id: string;
+  conditions: string[];
+}
+
+async function queryClinVar(
+  chrom: string,
+  pos: number,
+  ref: string,
+  alt: string,
+  assembly: string,
+): Promise<ClinVarResult | null> {
+  try {
+    const assemblyTag = assembly === "GRCh38" ? "GRCh38" : "GRCh37";
+    // Use NCBI variation services API for precise lookup
+    const searchTerm = `${chrom}[Chromosome] AND ${pos}[Base Position] AND ${assemblyTag}[Assembly]`;
+    const esearchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=clinvar&term=${encodeURIComponent(searchTerm)}&retmode=json&retmax=5`;
+
+    const searchResp = await fetch(esearchUrl);
+    if (!searchResp.ok) return null;
+    const searchData = await searchResp.json();
+
+    const ids: string[] = searchData?.esearchresult?.idlist || [];
+    if (ids.length === 0) return null;
+
+    // Fetch summaries for matching IDs
+    const esummaryUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=clinvar&id=${ids.join(",")}&retmode=json`;
+    const summaryResp = await fetch(esummaryUrl);
+    if (!summaryResp.ok) return null;
+    const summaryData = await summaryResp.json();
+
+    const results = summaryData?.result;
+    if (!results) return null;
+
+    // Find best match by checking variant details
+    for (const uid of ids) {
+      const entry = results[uid];
+      if (!entry) continue;
+
+      // Extract clinical significance
+      const significance = entry.clinical_significance?.description || 
+                          entry.germline_classification?.description ||
+                          entry.clinical_significance || null;
+      if (!significance) continue;
+
+      const reviewStatus = entry.clinical_significance?.review_status ||
+                          entry.review_status || "no_review";
+      
+      const conditions: string[] = [];
+      if (entry.trait_set) {
+        for (const trait of (Array.isArray(entry.trait_set) ? entry.trait_set : [entry.trait_set])) {
+          if (trait?.trait_name) conditions.push(trait.trait_name);
+        }
+      }
+
+      return {
+        significance: String(significance).toLowerCase().replace(/\s+/g, "_"),
+        review_status: String(reviewStatus),
+        variation_id: String(uid),
+        conditions,
+      };
+    }
+    return null;
+  } catch (e) {
+    console.warn("ClinVar lookup failed:", e);
+    return null;
+  }
+}
+
+// Batch ClinVar lookups with rate limiting (max 3/sec without API key)
+async function batchClinVarLookup(
+  variants: Array<{ chrom: string; pos: number; ref: string; alt: string; index: number }>,
+  assembly: string,
+): Promise<Map<number, ClinVarResult>> {
+  const results = new Map<number, ClinVarResult>();
+  const BATCH_DELAY = 350; // ~3 requests/sec
+
+  for (let i = 0; i < variants.length; i++) {
+    const v = variants[i];
+    const result = await queryClinVar(v.chrom, v.pos, v.ref, v.alt, assembly);
+    if (result) {
+      results.set(v.index, result);
+    }
+    // Rate limit
+    if (i < variants.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, BATCH_DELAY));
+    }
+  }
+  return results;
+}
+
+// Map ClinVar significance to our classification system
+function mapClinVarSignificance(clinvarSig: string): {
+  classification: string;
+  tierAdjustment: number | null;
+  confidence: string;
+} {
+  const sig = clinvarSig.toLowerCase().replace(/[\s_-]+/g, "_");
+  
+  if (sig.includes("pathogenic") && !sig.includes("likely") && !sig.includes("conflicting")) {
+    return { classification: "pathogenic", tierAdjustment: 1, confidence: "high" };
+  }
+  if (sig.includes("likely_pathogenic")) {
+    return { classification: "likely_pathogenic", tierAdjustment: 2, confidence: "moderate" };
+  }
+  if (sig.includes("uncertain") || sig.includes("vus")) {
+    return { classification: "vus", tierAdjustment: 3, confidence: "low" };
+  }
+  if (sig.includes("likely_benign")) {
+    return { classification: "likely_benign", tierAdjustment: 4, confidence: "moderate" };
+  }
+  if (sig.includes("benign") && !sig.includes("likely")) {
+    return { classification: "benign", tierAdjustment: 4, confidence: "high" };
+  }
+  if (sig.includes("conflicting")) {
+    return { classification: "vus", tierAdjustment: null, confidence: "low" };
+  }
+  return { classification: "vus", tierAdjustment: null, confidence: "low" };
+}
+
+// ============================================================
 // CLASSIFICATION SERVICE
 // ============================================================
 function classifyVariant(
