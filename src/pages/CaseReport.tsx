@@ -111,33 +111,65 @@ export default function CaseReport() {
             </div>
           </div>
           {!isPending && data.report_ready !== false && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={async () => {
-                const projectId = import.meta.env.VITE_SUPABASE_PROJECT_ID;
-                const { data: session } = await (await import('@/integrations/supabase/client')).supabase.auth.getSession();
-                const url = `https://${projectId}.supabase.co/functions/v1/generate-report?case_id=${id}&format=html`;
-                const resp = await fetch(url, {
-                  headers: {
-                    Authorization: `Bearer ${session.session?.access_token}`,
-                    apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-                  },
-                });
-                if (resp.ok) {
-                  const html = await resp.text();
-                  const blob = new Blob([html], { type: 'text/html' });
-                  const a = document.createElement('a');
-                  a.href = URL.createObjectURL(blob);
-                  a.download = `report-${data.case_number || id}.html`;
-                  a.click();
-                  URL.revokeObjectURL(a.href);
-                }
-              }}
-            >
-              <Download className="h-4 w-4 mr-1" />
-              Download Report
-            </Button>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={async () => {
+                  const projectId = import.meta.env.VITE_SUPABASE_PROJECT_ID;
+                  const { data: session } = await (await import('@/integrations/supabase/client')).supabase.auth.getSession();
+                  const url = `https://${projectId}.supabase.co/functions/v1/generate-report?case_id=${id}&format=html`;
+                  const resp = await fetch(url, {
+                    headers: {
+                      Authorization: `Bearer ${session.session?.access_token}`,
+                      apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+                    },
+                  });
+                  if (resp.ok) {
+                    const html = await resp.text();
+                    const blob = new Blob([html], { type: 'text/html' });
+                    const a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = `report-${data.case_number || id}.html`;
+                    a.click();
+                    URL.revokeObjectURL(a.href);
+                  }
+                }}
+              >
+                <Download className="h-4 w-4 mr-1" />
+                HTML
+              </Button>
+              <Button
+                variant="default"
+                size="sm"
+                onClick={async () => {
+                  const projectId = import.meta.env.VITE_SUPABASE_PROJECT_ID;
+                  const { data: session } = await (await import('@/integrations/supabase/client')).supabase.auth.getSession();
+                  const url = `https://${projectId}.supabase.co/functions/v1/generate-report?case_id=${id}&format=html`;
+                  const resp = await fetch(url, {
+                    headers: {
+                      Authorization: `Bearer ${session.session?.access_token}`,
+                      apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+                    },
+                  });
+                  if (resp.ok) {
+                    const html = await resp.text();
+                    const printWindow = window.open('', '_blank');
+                    if (printWindow) {
+                      printWindow.document.write(html);
+                      printWindow.document.close();
+                      // Wait for content to render, then trigger print (Save as PDF)
+                      printWindow.onload = () => printWindow.print();
+                      // Fallback if onload doesn't fire
+                      setTimeout(() => printWindow.print(), 500);
+                    }
+                  }
+                }}
+              >
+                <FileText className="h-4 w-4 mr-1" />
+                PDF
+              </Button>
+            </div>
           )}
           {(data.status === 'review_required' || data.status === 'completed') && (
             <Button variant="default" size="sm" asChild>
