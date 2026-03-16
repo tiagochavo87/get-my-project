@@ -29,6 +29,7 @@ const App = () => (
             <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
             <Route path="/new-case" element={<ProtectedRoute><NewCase /></ProtectedRoute>} />
             <Route path="/case/:id" element={<ProtectedRoute><CaseReport /></ProtectedRoute>} />
+            <Route path="/case/:id/review" element={<ProtectedRoute><ReviewCase /></ProtectedRoute>} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </AuthProvider>
