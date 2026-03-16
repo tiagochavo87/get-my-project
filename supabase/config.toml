@@ -1,0 +1,7 @@
+project_id = "wyisysjeyksrvjjpturw"
+
+[functions.analyze-vcf]
+verify_jwt = false
+
+[functions.get-interpretation]
+verify_jwt = false
