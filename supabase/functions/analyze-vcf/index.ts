@@ -381,7 +381,8 @@ function classifyVariant(
   const isKnown = relevance === "known";
 
   // Check hotspot
-  const isHotspot = gene && MM_HOTSPOTS[gene]?.positions.includes(v.pos);
+  const hotspotMap = assembly === "GRCh38" ? MM_HOTSPOTS_38 : MM_HOTSPOTS_37;
+  const isHotspot = gene && hotspotMap[gene]?.positions.includes(v.pos);
 
   let tier = 4;
   let confidence = "low";
