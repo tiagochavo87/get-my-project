@@ -213,6 +213,8 @@ interface VcfParseResult {
   infoFields: string[];
   formatFields: string[];
   vcfVersion: string | null;
+  isGvcf: boolean;
+  gvcfRefBlocksSkipped: number;
   isValid: boolean;
   validationErrors: string[];
 }
@@ -253,6 +255,8 @@ function parseVcfContent(content: string): VcfParseResult {
   if (!vcfVersion) validationErrors.push("Missing ##fileformat line — VCF version not detected.");
 
   const variants: ParsedVariant[] = [];
+  let gvcfRefBlocksSkipped = 0;
+
   for (const line of dataLines) {
     const cols = line.split("\t");
     if (cols.length < 8) continue;
@@ -269,6 +273,14 @@ function parseVcfContent(content: string): VcfParseResult {
       }
     }
 
+    // GVCF: skip pure reference blocks (ALT is only <NON_REF> or <*> with END= in INFO)
+    const rawAlt = cols[4];
+    const isRefBlock = (rawAlt === "<NON_REF>" || rawAlt === "<*>" || rawAlt === ".") && infoObj["END"];
+    if (isRefBlock) {
+      gvcfRefBlocksSkipped++;
+      continue;
+    }
+
     const fmtArr = cols[8] ? cols[8].split(":") : [];
     const sampleObj: Record<string, string> = {};
     if (cols[9] && fmtArr.length > 0) {
@@ -276,9 +288,10 @@ function parseVcfContent(content: string): VcfParseResult {
       fmtArr.forEach((f, i) => { sampleObj[f] = vals[i] || "."; });
     }
 
-    const alts = cols[4].split(",");
+    const alts = rawAlt.split(",");
     for (const alt of alts) {
-      if (alt === "." || alt === "*") continue;
+      // Skip GVCF symbolic alleles
+      if (alt === "." || alt === "*" || alt === "<NON_REF>" || alt === "<*>") continue;
       variants.push({
         chrom: cols[0].replace("chr", ""),
         pos: parseInt(cols[1]),
@@ -294,6 +307,18 @@ function parseVcfContent(content: string): VcfParseResult {
     }
   }
 
+  if (gvcfRefBlocksSkipped > 0) {
+    console.log(`[GVCF] Skipped ${gvcfRefBlocksSkipped} reference blocks`);
+  }
+
+  // Detect GVCF format
+  const isGvcf = gvcfRefBlocksSkipped > 0 ||
+    headerLines.some(h => h.includes("GVCFBlock") || h.includes("<NON_REF>") || h.includes("gvcf"));
+
+  if (isGvcf) {
+    console.log(`[GVCF] Detected GVCF format. ${variants.length} true variants extracted, ${gvcfRefBlocksSkipped} ref blocks skipped.`);
+  }
+
   return {
     headerLines,
     variants,
@@ -302,6 +327,8 @@ function parseVcfContent(content: string): VcfParseResult {
     infoFields: [...infoFieldSet],
     formatFields: [...formatFieldSet],
     vcfVersion,
+    isGvcf,
+    gvcfRefBlocksSkipped,
     isValid: validationErrors.length === 0 && hasChromLine,
     validationErrors,
   };
@@ -498,7 +525,7 @@ function lookupGeneByPosition(chrom: string, pos: number, geneRefs: GeneRef[]): 
 // QC SERVICE
 // ============================================================
 function generateQC(parsed: VcfParseResult, expectedAssembly: string) {
-  const { variants, assemblyDetected, infoFields, formatFields } = parsed;
+  const { variants, assemblyDetected, infoFields, formatFields, isGvcf, gvcfRefBlocksSkipped } = parsed;
   const total = variants.length;
   const passed = variants.filter((v) => v.filter === "PASS" || v.filter === ".").length;
   const failed = total - passed;
@@ -529,6 +556,10 @@ function generateQC(parsed: VcfParseResult, expectedAssembly: string) {
 
   if (!parsed.isValid) {
     for (const err of parsed.validationErrors) warnings.push(`VCF Validation: ${err}`);
+  }
+
+  if (isGvcf) {
+    warnings.push(`GVCF format detected — ${gvcfRefBlocksSkipped} reference blocks skipped, ${variants.length} true variants extracted.`);
   }
 
   return {
