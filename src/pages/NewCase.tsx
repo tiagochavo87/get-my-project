@@ -220,7 +220,7 @@ export default function NewCase() {
                     </Select>
                   </div>
                   <div className="space-y-1.5">
-                    <Label className="text-xs">Regulatory Region *</Label>
+                    <Label className="text-xs">Regulatory Region</Label>
                     <Select value={regulatoryRegion} onValueChange={setRegulatoryRegion}>
                       <SelectTrigger><SelectValue placeholder="Select..." /></SelectTrigger>
                       <SelectContent>
