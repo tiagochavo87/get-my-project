@@ -36,7 +36,10 @@ export default function NewCase() {
   const [creatinine, setCreatinine] = useState('');
   const [clinicalNotes, setClinicalNotes] = useState('');
 
-  const isVcfFile = (f: File) => f.name.endsWith('.vcf') || f.name.endsWith('.vcf.gz');
+  const isVcfFile = (f: File) => {
+    const name = f.name.toLowerCase();
+    return name.endsWith('.vcf') || name.endsWith('.vcf.gz') || name.endsWith('.gvcf') || name.endsWith('.gvcf.gz');
+  };
 
   const handleFileDrop = (e: React.DragEvent) => {
     e.preventDefault();
