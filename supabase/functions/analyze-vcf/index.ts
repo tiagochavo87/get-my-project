@@ -382,7 +382,106 @@ function extractFullAnnotation(v: ParsedVariant, geneRefs: GeneRef[]): Extracted
     }
   }
 
+  // Local consequence inference if still missing
+  if (!result.consequence) {
+    result.consequence = inferConsequenceLocally(v.ref, v.alt, result.gene, result.annotation_source !== "none");
+    if (result.consequence && result.annotation_source === "none") {
+      result.annotation_source = "local_inference_v1";
+    } else if (result.consequence) {
+      result.annotation_source += "+local_consequence";
+    }
+  }
+
+  // Local predicted effect if missing
+  if (!result.predicted_effect && result.consequence) {
+    result.predicted_effect = mapConsequenceToImpact(result.consequence);
+  }
+
+  // Local HGVS genomic notation if missing
+  if (!result.hgvs_c) {
+    result.hgvs_c = generateLocalHGVSg(v.chrom, v.pos, v.ref, v.alt);
+  }
+
   return result;
+}
+
+// ============================================================
+// LOCAL CONSEQUENCE INFERENCE — No external API needed
+// ============================================================
+function inferConsequenceLocally(ref: string, alt: string, gene: string | null, hasGene: boolean): string | null {
+  const refLen = ref.length;
+  const altLen = alt.length;
+
+  if (refLen === 1 && altLen === 1) {
+    // SNV
+    if (!hasGene && !gene) return "intergenic_variant";
+    // Without transcript info, we infer coding region if gene is known
+    return gene ? "missense_variant" : "intergenic_variant";
+  }
+
+  if (refLen > altLen) {
+    // Deletion
+    const delLen = refLen - altLen;
+    if (!gene) return "intergenic_variant";
+    if (delLen % 3 === 0) return "inframe_deletion";
+    return "frameshift_variant";
+  }
+
+  if (altLen > refLen) {
+    // Insertion
+    const insLen = altLen - refLen;
+    if (!gene) return "intergenic_variant";
+    if (insLen % 3 === 0) return "inframe_insertion";
+    return "frameshift_variant";
+  }
+
+  // MNV (multi-nucleotide variant, same length)
+  if (refLen > 1) {
+    return gene ? "missense_variant" : "intergenic_variant";
+  }
+
+  return null;
+}
+
+function mapConsequenceToImpact(consequence: string): string {
+  const highImpact = ["frameshift_variant", "stop_gained", "stop_lost", "start_lost", "splice_acceptor_variant", "splice_donor_variant"];
+  const moderateImpact = ["missense_variant", "inframe_deletion", "inframe_insertion", "protein_altering_variant"];
+  const lowImpact = ["synonymous_variant", "splice_region_variant", "stop_retained_variant"];
+
+  if (highImpact.includes(consequence)) return "HIGH";
+  if (moderateImpact.includes(consequence)) return "MODERATE";
+  if (lowImpact.includes(consequence)) return "LOW";
+  return "MODIFIER";
+}
+
+function generateLocalHGVSg(chrom: string, pos: number, ref: string, alt: string): string {
+  const normalizedChrom = chrom.replace("chr", "");
+  const refLen = ref.length;
+  const altLen = alt.length;
+
+  if (refLen === 1 && altLen === 1) {
+    // SNV: g.posRef>Alt
+    return `g.${normalizedChrom}:${pos}${ref}>${alt}`;
+  }
+
+  if (refLen > altLen) {
+    // Deletion
+    const delStart = pos + 1;
+    const delEnd = pos + refLen - 1;
+    if (delStart === delEnd) {
+      return `g.${normalizedChrom}:${delStart}del`;
+    }
+    return `g.${normalizedChrom}:${delStart}_${delEnd}del`;
+  }
+
+  if (altLen > refLen) {
+    // Insertion
+    const insSeq = alt.substring(refLen);
+    return `g.${normalizedChrom}:${pos}_${pos + 1}ins${insSeq}`;
+  }
+
+  // MNV
+  return `g.${normalizedChrom}:${pos}_${pos + refLen - 1}delins${alt}`;
 }
 
 function lookupGeneByPosition(chrom: string, pos: number, geneRefs: GeneRef[]): GeneRef | null {
@@ -1536,111 +1635,64 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ===== STEP 7: VEP ANNOTATION (for unannotated variants) =====
-    await logStep(supabase, jobId, "vep_annotation", "started");
+    // ===== STEP 7: LOCAL ANNOTATION ENRICHMENT (consequence + HGVS) =====
+    await logStep(supabase, jobId, "local_annotation", "started");
+    // Enrich variants that still lack consequence/HGVS using local inference
+    // (replaces external VEP API which is unreachable from Edge Functions due to DNS)
     const unannotatedVariants = classifiedVariants.filter(
-      v => v.variantId && v.tier <= 3 && (!v.classification.rationale_json?.predicted_effect || v.classification.rationale_json?.predicted_effect === null)
+      v => v.variantId && v.tier <= 3
     );
-    let vepHits = 0;
-    const MAX_VEP_BATCH = 100; // Ensembl VEP POST endpoint supports up to 200 per batch
+    let localEnriched = 0;
 
     if (unannotatedVariants.length > 0 && (Date.now() - startTime) < TIMEOUT_MS - 15000) {
-      // Fetch coordinates for unannotated variants
-      const unannotatedIds = unannotatedVariants.slice(0, MAX_VEP_BATCH).map(v => v.variantId!);
-      const { data: unannotatedCoords } = await supabase
-        .from("vcf_variants")
-        .select("id, chrom, pos, ref, alt")
-        .in("id", unannotatedIds);
+      const unannotatedIds = unannotatedVariants.map(v => v.variantId!);
+      // Fetch current annotations to check which need enrichment
+      const { data: existingAnnotations } = await supabase
+        .from("variant_annotations")
+        .select("variant_id, consequence, hgvs_c, gene_symbol, annotation_source")
+        .in("variant_id", unannotatedIds);
 
-      if (unannotatedCoords && unannotatedCoords.length > 0) {
-        // Build VEP batch input: "chrom pos pos ref/alt" for SNVs, or HGVS-like for indels
-        const vepInputs = unannotatedCoords.map((vc: any) => {
-          const chrom = vc.chrom.replace("chr", "");
-          if (vc.ref.length === 1 && vc.alt.length === 1) {
-            // SNV
-            return `${chrom} ${vc.pos} ${vc.pos} ${vc.ref}/${vc.alt} 1`;
-          } else if (vc.ref.length > vc.alt.length) {
-            // Deletion
-            const delStart = vc.pos + 1;
-            const delEnd = vc.pos + vc.ref.length - 1;
-            return `${chrom} ${delStart} ${delEnd} ${vc.ref.substring(1) || "-"}/${vc.alt.substring(1) || "-"} 1`;
-          } else {
-            // Insertion
-            return `${chrom} ${vc.pos} ${vc.pos} -/${vc.alt.substring(vc.ref.length)} 1`;
-          }
-        });
+      if (existingAnnotations) {
+        const needsEnrichment = existingAnnotations.filter(
+          (a: any) => !a.consequence || a.consequence === null || !a.hgvs_c || a.hgvs_c === null
+        );
 
-        try {
-          const vepAssembly = caseData.assembly === "GRCh38" ? "grch38" : "grch37";
-          const vepUrl = caseData.assembly === "GRCh38"
-            ? "https://rest.ensembl.org/vep/homo_sapiens/region"
-            : "https://grch37.rest.ensembl.org/vep/homo_sapiens/region";
+        for (const annot of needsEnrichment) {
+          // Fetch variant coords
+          const { data: vc } = await supabase
+            .from("vcf_variants")
+            .select("chrom, pos, ref, alt")
+            .eq("id", annot.variant_id)
+            .single();
+          if (!vc) continue;
 
-          const vepResp = await fetch(vepUrl, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "Accept": "application/json",
-            },
-            body: JSON.stringify({ variants: vepInputs }),
-            signal: AbortSignal.timeout(20000),
-          });
+          const updates: Record<string, any> = {};
 
-          if (vepResp.ok) {
-            const vepResults = await vepResp.json();
-
-            for (const vr of vepResults) {
-              // Match back to our variant by position
-              const inputParts = vr.input?.split(" ") || [];
-              const vepChrom = inputParts[0];
-              const vepPos = parseInt(inputParts[1]);
-
-              // Find matching variant
-              const matchedCoord = unannotatedCoords.find((vc: any) => {
-                const vcChrom = vc.chrom.replace("chr", "");
-                return vcChrom === vepChrom && vc.pos === vepPos;
-              });
-              if (!matchedCoord) continue;
-
-              // Get the most severe consequence
-              const tc = vr.most_severe_consequence;
-              const transcriptConsequences = vr.transcript_consequences || [];
-              // Pick the canonical transcript or first one
-              const bestTc = transcriptConsequences.find((t: any) => t.canonical === 1) || transcriptConsequences[0];
-
-              if (bestTc) {
-                vepHits++;
-                // Update annotation in DB
-                await supabase.from("variant_annotations").update({
-                  gene_symbol: bestTc.gene_symbol || null,
-                  consequence: tc || bestTc.consequence_terms?.join(",") || null,
-                  hgvs_c: bestTc.hgvsc || null,
-                  hgvs_p: bestTc.hgvsp || null,
-                  annotation_source: "ensembl_vep_rest",
-                  annotation_version: "vep_rest_v1",
-                }).eq("variant_id", matchedCoord.id);
-
-                // Update the local classified variant gene if missing
-                const cv = classifiedVariants.find(v => v.variantId === matchedCoord.id);
-                if (cv && !cv.gene && bestTc.gene_symbol) {
-                  cv.gene = bestTc.gene_symbol;
-                }
-              }
+          if (!annot.consequence) {
+            const localConsequence = inferConsequenceLocally(vc.ref, vc.alt, annot.gene_symbol, !!annot.gene_symbol);
+            if (localConsequence) {
+              updates.consequence = localConsequence;
             }
-          } else {
-            const errText = await vepResp.text();
-            console.warn("VEP API error:", vepResp.status, errText);
           }
-        } catch (vepErr) {
-          console.warn("VEP annotation failed:", vepErr);
+
+          if (!annot.hgvs_c) {
+            updates.hgvs_c = generateLocalHGVSg(vc.chrom, vc.pos, vc.ref, vc.alt);
+          }
+
+          if (Object.keys(updates).length > 0) {
+            updates.annotation_source = (annot.annotation_source || "local") + "+local_inference";
+            updates.annotation_version = "local_v1";
+            await supabase.from("variant_annotations").update(updates).eq("variant_id", annot.variant_id);
+            localEnriched++;
+          }
         }
       }
     }
 
-    await logStep(supabase, jobId, "vep_annotation", "completed", {
-      unannotated_count: unannotatedVariants.length,
-      vep_hits: vepHits,
-      skipped: unannotatedVariants.length === 0 ? "all_variants_annotated" : undefined,
+    await logStep(supabase, jobId, "local_annotation", "completed", {
+      candidates: unannotatedVariants.length,
+      enriched: localEnriched,
+      method: "local_consequence_inference_v1",
     });
 
     // ===== STEP 8: gnomAD POPULATION AF FILTERING (germline) =====
@@ -1648,95 +1700,88 @@ Deno.serve(async (req) => {
     let gnomadHits = 0;
     let gnomadFiltered = 0;
     let gnomadDowngrades = 0;
-    const MAX_GNOMAD_LOOKUPS = 80;
+    let gnomadApiReachable = false;
 
-    // Only run gnomAD for germline cases, or all cases where VCF lacks population AF fields
     const isGermline = caseData.sample_type === "germline_constitutional";
     const hasPopAfInVcf = parsed.infoFields.some(f =>
       ["gnomAD_AF", "gnomADg_AF", "gnomADe_AF", "AF_popmax", "ExAC_AF", "1000g2015aug_all", "MAX_AF"].includes(f)
     );
 
     if ((isGermline || !hasPopAfInVcf) && (Date.now() - startTime) < TIMEOUT_MS - 20000) {
-      // Get tier 1-3 variants that need gnomAD lookup
       const gnomadCandidates = classifiedVariants
         .filter(v => v.variantId && v.tier <= 3)
-        .slice(0, MAX_GNOMAD_LOOKUPS);
+        .slice(0, 80);
 
       if (gnomadCandidates.length > 0) {
-        const candidateIds = gnomadCandidates.map(v => v.variantId!);
-        const { data: gnomadCoords } = await supabase
-          .from("vcf_variants")
-          .select("id, chrom, pos, ref, alt")
-          .in("id", candidateIds);
+        // Test connectivity with a single probe request first
+        try {
+          const probeResp = await fetch("https://gnomad.broadinstitute.org/api", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query: "{ __typename }" }),
+            signal: AbortSignal.timeout(5000),
+          });
+          gnomadApiReachable = probeResp.ok;
+        } catch (_) {
+          gnomadApiReachable = false;
+          console.warn("gnomAD API unreachable (DNS/network). Skipping population AF lookups — using VCF INFO fields only.");
+        }
 
-        if (gnomadCoords && gnomadCoords.length > 0) {
-          const gnomadTargets = gnomadCoords.map((vc: any, idx: number) => ({
-            chrom: vc.chrom,
-            pos: vc.pos,
-            ref: vc.ref,
-            alt: vc.alt,
-            index: idx,
-          }));
+        if (gnomadApiReachable) {
+          const candidateIds = gnomadCandidates.map(v => v.variantId!);
+          const { data: gnomadCoords } = await supabase
+            .from("vcf_variants")
+            .select("id, chrom, pos, ref, alt")
+            .in("id", candidateIds);
 
-          const gnomadResults = await batchGnomADLookup(gnomadTargets, caseData.assembly);
+          if (gnomadCoords && gnomadCoords.length > 0) {
+            const gnomadTargets = gnomadCoords.map((vc: any, idx: number) => ({
+              chrom: vc.chrom, pos: vc.pos, ref: vc.ref, alt: vc.alt, index: idx,
+            }));
+            const gnomadResults = await batchGnomADLookup(gnomadTargets, caseData.assembly);
 
-          for (const [idx, gnomadResult] of gnomadResults.entries()) {
-            const vc = gnomadCoords[idx];
-            if (!vc) continue;
-            gnomadHits++;
+            for (const [idx, gnomadResult] of gnomadResults.entries()) {
+              const vc = gnomadCoords[idx];
+              if (!vc) continue;
+              gnomadHits++;
 
-            // Store gnomAD AF in variant_annotations
-            const updateData: Record<string, any> = {};
-            if (gnomadResult.af !== null) {
-              updateData.allele_frequency = gnomadResult.af;
-            }
-            // Append gnomad to sources
-            await supabase.from("variant_annotations").update({
-              ...updateData,
-              sources: ["rule_engine", "gnomad", gnomadResult.source],
-            }).eq("variant_id", vc.id);
+              const updateData: Record<string, any> = {};
+              if (gnomadResult.af !== null) updateData.allele_frequency = gnomadResult.af;
+              await supabase.from("variant_annotations").update({
+                ...updateData,
+                sources: ["rule_engine", "gnomad", gnomadResult.source],
+              }).eq("variant_id", vc.id);
 
-            // For germline: filter out common polymorphisms (AF > 1%)
-            if (isGermline && gnomadResult.af_popmax !== null && gnomadResult.af_popmax > 0.01) {
-              gnomadFiltered++;
-              const cv = classifiedVariants.find(v => v.variantId === vc.id);
-              if (cv && !cv.classification.rationale_json?.is_high_risk_gene) {
-                // Downgrade to tier 4 / benign — common germline polymorphism
-                gnomadDowngrades++;
-                cv.tier = 4;
-                cv.classification.clinical_significance = "benign";
-                cv.classification.confidence = "high";
-                cv.classification.requires_manual_review = false;
-
-                await supabase.from("variant_classifications").update({
-                  tier: 4,
-                  clinical_significance: "benign",
-                  confidence: "high",
-                  requires_manual_review: false,
-                  rationale_json: {
-                    ...cv.classification.rationale_json,
-                    gnomad_af: gnomadResult.af,
-                    gnomad_af_popmax: gnomadResult.af_popmax,
-                    gnomad_source: gnomadResult.source,
-                    gnomad_filtered: true,
-                    gnomad_filter_reason: `Population AF (popmax=${gnomadResult.af_popmax?.toFixed(4)}) exceeds 1% threshold for germline analysis`,
-                  },
-                }).eq("variant_id", vc.id);
-              }
-            } else {
-              // Not filtered — still store gnomAD data in rationale for context
-              const cv = classifiedVariants.find(v => v.variantId === vc.id);
-              if (cv) {
-                await supabase.from("variant_classifications").update({
-                  rationale_json: {
-                    ...cv.classification.rationale_json,
-                    gnomad_af: gnomadResult.af,
-                    gnomad_af_popmax: gnomadResult.af_popmax,
-                    gnomad_homozygotes: gnomadResult.homozygote_count,
-                    gnomad_source: gnomadResult.source,
-                    gnomad_filtered: false,
-                  },
-                }).eq("variant_id", vc.id);
+              if (isGermline && gnomadResult.af_popmax !== null && gnomadResult.af_popmax > 0.01) {
+                gnomadFiltered++;
+                const cv = classifiedVariants.find(v => v.variantId === vc.id);
+                if (cv && !cv.classification.rationale_json?.is_high_risk_gene) {
+                  gnomadDowngrades++;
+                  cv.tier = 4;
+                  cv.classification.clinical_significance = "benign";
+                  cv.classification.confidence = "high";
+                  cv.classification.requires_manual_review = false;
+                  await supabase.from("variant_classifications").update({
+                    tier: 4, clinical_significance: "benign", confidence: "high", requires_manual_review: false,
+                    rationale_json: {
+                      ...cv.classification.rationale_json,
+                      gnomad_af: gnomadResult.af, gnomad_af_popmax: gnomadResult.af_popmax,
+                      gnomad_source: gnomadResult.source, gnomad_filtered: true,
+                      gnomad_filter_reason: `Population AF (popmax=${gnomadResult.af_popmax?.toFixed(4)}) exceeds 1% threshold`,
+                    },
+                  }).eq("variant_id", vc.id);
+                }
+              } else {
+                const cv = classifiedVariants.find(v => v.variantId === vc.id);
+                if (cv) {
+                  await supabase.from("variant_classifications").update({
+                    rationale_json: {
+                      ...cv.classification.rationale_json,
+                      gnomad_af: gnomadResult.af, gnomad_af_popmax: gnomadResult.af_popmax,
+                      gnomad_homozygotes: gnomadResult.homozygote_count, gnomad_source: gnomadResult.source, gnomad_filtered: false,
+                    },
+                  }).eq("variant_id", vc.id);
+                }
               }
             }
           }
@@ -1747,10 +1792,11 @@ Deno.serve(async (req) => {
     await logStep(supabase, jobId, "gnomad_filtering", "completed", {
       is_germline: isGermline,
       has_pop_af_in_vcf: hasPopAfInVcf,
+      api_reachable: gnomadApiReachable,
       lookups: gnomadHits,
       filtered_common: gnomadFiltered,
       tier_downgrades: gnomadDowngrades,
-      skipped: gnomadHits === 0 ? (isGermline ? "no_candidates_or_timeout" : "somatic_with_vcf_af") : undefined,
+      fallback: !gnomadApiReachable ? "vcf_info_fields_only" : undefined,
     });
 
     // ===== STEP 9: CLINVAR ANNOTATION =====
@@ -1956,7 +2002,10 @@ Deno.serve(async (req) => {
     if (!caseData.riss_stage) limitations.push("R-ISS stage not provided — risk stratification incomplete.");
     if (caseData.sample_type === "somatic_tumor") limitations.push("Germline filtering not performed (somatic-only sample).");
     if (caseData.sample_type === "tumor_normal_paired") limitations.push("Tumor-normal paired analysis requires validated somatic caller output.");
-    limitations.push("Gene annotation uses positional lookup, VCF INFO fields, VEP REST API, ClinVar SPDI, and gnomAD GraphQL. Some variants may lack full annotation if external APIs are unreachable.");
+    limitations.push("Gene annotation uses positional lookup, VCF INFO fields, local consequence inference, and ClinVar SPDI. gnomAD population AF is attempted via API when reachable; otherwise, VCF-embedded population AF fields are used.");
+    if (!gnomadApiReachable && isGermline) {
+      limitations.push("gnomAD API was unreachable during this analysis. Germline population AF filtering relied on VCF INFO fields only. Re-processing may yield additional gnomAD annotations.");
+    }
 
     const manualReviewReasons: string[] = [];
     if (flags.manual_review_required) manualReviewReasons.push("One or more variants require manual curation review.");
