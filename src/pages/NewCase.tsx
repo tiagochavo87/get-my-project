@@ -70,11 +70,10 @@ export default function NewCase() {
       if (uploadError) throw uploadError;
 
       // 2. Insert case record
-      const { data: caseData, error: caseError } = await supabase
-        .from('cases')
+      const { data: caseData, error: caseError } = await (supabase
+        .from('cases' as any)
         .insert({
           user_id: user.id,
-          case_number: 'TEMP',
           sample_type: sampleType,
           assembly,
           diagnosis,
@@ -91,18 +90,19 @@ export default function NewCase() {
           file_size: file.size,
           file_path: filePath,
           status: 'processing',
-        })
+        } as any)
         .select()
-        .single();
+        .single());
 
       if (caseError) throw caseError;
+      const insertedCase = caseData as any;
 
       toast.success('Case submitted. Starting analysis pipeline...');
 
       // 3. Trigger VCF analysis pipeline
       const { data: session } = await supabase.auth.getSession();
       supabase.functions.invoke('analyze-vcf', {
-        body: { case_id: caseData.id },
+        body: { case_id: insertedCase.id },
         headers: { Authorization: `Bearer ${session.session?.access_token}` },
       }).then((res) => {
         if (res.error) {
