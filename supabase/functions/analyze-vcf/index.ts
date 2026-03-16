@@ -253,6 +253,8 @@ function parseVcfContent(content: string): VcfParseResult {
   if (!vcfVersion) validationErrors.push("Missing ##fileformat line — VCF version not detected.");
 
   const variants: ParsedVariant[] = [];
+  let gvcfRefBlocksSkipped = 0;
+
   for (const line of dataLines) {
     const cols = line.split("\t");
     if (cols.length < 8) continue;
@@ -269,6 +271,14 @@ function parseVcfContent(content: string): VcfParseResult {
       }
     }
 
+    // GVCF: skip pure reference blocks (ALT is only <NON_REF> or <*> with END= in INFO)
+    const rawAlt = cols[4];
+    const isRefBlock = (rawAlt === "<NON_REF>" || rawAlt === "<*>" || rawAlt === ".") && infoObj["END"];
+    if (isRefBlock) {
+      gvcfRefBlocksSkipped++;
+      continue;
+    }
+
     const fmtArr = cols[8] ? cols[8].split(":") : [];
     const sampleObj: Record<string, string> = {};
     if (cols[9] && fmtArr.length > 0) {
@@ -276,9 +286,10 @@ function parseVcfContent(content: string): VcfParseResult {
       fmtArr.forEach((f, i) => { sampleObj[f] = vals[i] || "."; });
     }
 
-    const alts = cols[4].split(",");
+    const alts = rawAlt.split(",");
     for (const alt of alts) {
-      if (alt === "." || alt === "*") continue;
+      // Skip GVCF symbolic alleles
+      if (alt === "." || alt === "*" || alt === "<NON_REF>" || alt === "<*>") continue;
       variants.push({
         chrom: cols[0].replace("chr", ""),
         pos: parseInt(cols[1]),
@@ -292,6 +303,10 @@ function parseVcfContent(content: string): VcfParseResult {
         sample_data: sampleObj,
       });
     }
+  }
+
+  if (gvcfRefBlocksSkipped > 0) {
+    console.log(`[GVCF] Skipped ${gvcfRefBlocksSkipped} reference blocks`);
   }
 
   return {
