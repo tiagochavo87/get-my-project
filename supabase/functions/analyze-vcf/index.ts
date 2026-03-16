@@ -1301,27 +1301,16 @@ Deno.serve(async (req) => {
         const variantId = inserted[j]?.id;
         if (!variantId) continue;
 
-        // Quality filter — skip low-quality variants
-        const filterResult = passesQualityFilter(v, DEFAULT_FILTER);
+        // Quality filter — select strategy based on sample type
+        const filterConfig = caseData.sample_type === "germline_constitutional" ? GERMLINE_FILTER : SOMATIC_FILTER;
+        const filterResult = passesQualityFilter(v, filterConfig);
         if (!filterResult.passes) continue;
 
-        // Gene extraction: try INFO first, then positional lookup
-        let gene = extractGeneFromInfo(v.info);
-        let geneRef: GeneRef | null = null;
-        let annotationSource = "vcf_info_field";
+        // Full annotation extraction (gene, consequence, HGVS, rsID, transcript, effect)
+        const annot = extractFullAnnotation(v, geneRefList);
+        const gene = annot.gene;
+        const geneRef = gene ? geneRefList.find(g => g.gene_symbol === gene) || null : null;
 
-        if (!gene) {
-          geneRef = lookupGeneByPosition(v.chrom, v.pos, geneRefList);
-          if (geneRef) {
-            gene = geneRef.gene_symbol;
-            annotationSource = "positional_lookup_v1";
-          }
-        } else {
-          geneRef = geneRefList.find(g => g.gene_symbol === gene) || null;
-        }
-
-        const consequence = extractConsequenceFromInfo(v.info);
-        const hgvs = extractHgvsFromInfo(v.info);
         const classification = classifyVariant(v, gene, geneRef, caseData.sample_type, caseData.assembly);
 
         // Only store detailed data for potentially relevant variants (tier <= 3 or has gene)
@@ -1332,15 +1321,15 @@ Deno.serve(async (req) => {
           annotationBatch.push({
             variant_id: variantId,
             gene_symbol: gene,
-            consequence,
-            hgvs_c: hgvs.hgvs_c,
-            hgvs_p: hgvs.hgvs_p,
-            annotation_source: annotationSource,
-            annotation_version: "2.0",
+            consequence: annot.consequence,
+            hgvs_c: annot.hgvs_c,
+            hgvs_p: annot.hgvs_p,
+            annotation_source: annot.annotation_source,
+            annotation_version: "3.0",
             allele_frequency: af || null,
             read_depth: dp || null,
             is_hotspot: classification.is_hotspot,
-            sources: gene ? ["rule_engine", annotationSource] : [],
+            sources: gene ? ["rule_engine", annot.annotation_source] : [],
           });
 
           classificationBatch.push({
@@ -1351,13 +1340,16 @@ Deno.serve(async (req) => {
             prognostic_significance: classification.prognostic_significance,
             therapeutic_significance: classification.therapeutic_significance,
             requires_manual_review: classification.requires_manual_review,
-            rationale_json: classification.rationale_json,
+            rationale_json: {
+              ...classification.rationale_json,
+              rsid: annot.rsid,
+              transcript: annot.transcript,
+              predicted_effect: annot.predicted_effect,
+            },
           });
 
           classifiedVariants.push({ gene, tier: classification.tier, classification, variantId });
-
-          // Track for post-ClinVar therapy computation
-          // (Therapy matching moved to after ClinVar refinement step)
+        }
         }
       }
 
