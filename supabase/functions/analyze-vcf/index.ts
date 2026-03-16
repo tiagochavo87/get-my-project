@@ -1035,12 +1035,32 @@ Deno.serve(async (req) => {
 
     // ===== STEP 6: FILTER, ANNOTATE, CLASSIFY =====
     await logStep(supabase, jobId, "classifying", "started");
-    const variantsToProcess = parsed.variants.slice(0, 50000);
+
+    // Adaptive variant cap based on edge function timeout (~55s safety margin)
+    const startTime = Date.now();
+    const TIMEOUT_MS = 45000; // 45s safety margin (edge fn ~60s limit)
+    const MAX_VARIANTS = 30000; // Hard cap
+    const variantsToProcess = parsed.variants.slice(0, MAX_VARIANTS);
+    const wasLimited = parsed.variants.length > MAX_VARIANTS;
+
     const classifiedVariants: { gene: string | null; tier: number; classification: ReturnType<typeof classifyVariant>; variantId?: string }[] = [];
     const therapyInserts: any[] = [];
     const CHUNK_SIZE = 500;
+    let processedCount = 0;
+    let timeoutReached = false;
 
     for (let i = 0; i < variantsToProcess.length; i += CHUNK_SIZE) {
+      // Check time budget before each chunk
+      if (Date.now() - startTime > TIMEOUT_MS) {
+        timeoutReached = true;
+        await logStep(supabase, jobId, "classifying", "completed", {
+          warning: "Time budget exceeded — partial processing",
+          processed: processedCount,
+          total: variantsToProcess.length,
+        });
+        break;
+      }
+
       const chunk = variantsToProcess.slice(i, i + CHUNK_SIZE);
 
       // Batch insert variants
