@@ -13,7 +13,7 @@ Deno.serve(async (req) => {
 
   try {
     const authHeader = req.headers.get("Authorization");
-    if (!authHeader) {
+    if (!authHeader?.startsWith("Bearer ")) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
@@ -27,18 +27,20 @@ Deno.serve(async (req) => {
     const anonKey = Deno.env.get("SUPABASE_ANON_KEY") || Deno.env.get("SUPABASE_PUBLISHABLE_KEY")!;
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
-    // Verify user
-    const anonClient = createClient(supabaseUrl, anonKey);
-    const { data: { user }, error: authErr } = await anonClient.auth.getUser(authHeader.replace("Bearer ", ""));
-    if (authErr || !user) {
+    // Verify user via getClaims
+    const anonClient = createClient(supabaseUrl, anonKey, { global: { headers: { Authorization: authHeader } } });
+    const token = authHeader.replace("Bearer ", "");
+    const { data: claimsData, error: authErr } = await anonClient.auth.getClaims(token);
+    if (authErr || !claimsData?.claims) {
       return new Response(JSON.stringify({ error: "Invalid token" }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
+    const userId = claimsData.claims.sub as string;
 
     const supabase = createClient(supabaseUrl, serviceKey);
 
     // Verify case ownership
     const { data: caseData, error: caseErr } = await supabase.from("cases").select("*").eq("id", caseId).single();
-    if (caseErr || !caseData || caseData.user_id !== user.id) {
+    if (caseErr || !caseData || caseData.user_id !== userId) {
       return new Response(JSON.stringify({ error: "Case not found" }), { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
@@ -79,40 +81,34 @@ Deno.serve(async (req) => {
       }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
-    // Get QC
-    const { data: qcData } = await supabase.from("qc_summaries").select("*").eq("case_id", caseId).order("created_at", { ascending: false }).limit(1).single();
+    // Parallel data fetching
+    const variantIdsPromise = supabase.from("vcf_variants").select("id").eq("case_id", caseId);
 
-    // Get Tier 1-2 variant IDs from classifications (avoid loading all variants)
-    const { data: classifications } = await supabase
-      .from("variant_classifications")
-      .select("*")
-      .in("variant_id", (
-        await supabase.from("vcf_variants").select("id").eq("case_id", caseId)
-      ).data?.map((v: any) => v.id) || [])
-      .lte("tier", 2);
+    const [{ data: qcData }, variantIdsResult, { data: therapies }, { data: biomarkers }, { data: audit }, { data: jobData }] = await Promise.all([
+      supabase.from("qc_summaries").select("*").eq("case_id", caseId).order("created_at", { ascending: false }).limit(1).single(),
+      variantIdsPromise,
+      supabase.from("therapy_options").select("*").eq("case_id", caseId),
+      supabase.from("biomarker_interpretations").select("*").eq("case_id", caseId),
+      supabase.from("audit_logs").select("*").eq("entity_id", caseId).order("created_at", { ascending: false }),
+      supabase.from("analysis_jobs").select("id, current_step, steps_log, status").eq("case_id", caseId).order("created_at", { ascending: false }).limit(1).single(),
+    ]);
+
+    const allVariantIds = variantIdsResult.data?.map((v: any) => v.id) || [];
+
+    // Get Tier 1-3 classifications
+    const { data: classifications } = allVariantIds.length > 0
+      ? await supabase.from("variant_classifications").select("*").in("variant_id", allVariantIds).lte("tier", 3)
+      : { data: [] };
 
     const relevantIds = (classifications || []).map((c: any) => c.variant_id);
 
-    // Get variants and annotations only for relevant ones
-    const { data: variants } = relevantIds.length > 0
-      ? await supabase.from("vcf_variants").select("id, chrom, pos, ref, alt, qual, filter").in("id", relevantIds)
-      : { data: [] };
-
-    const { data: annotations } = relevantIds.length > 0
-      ? await supabase.from("variant_annotations").select("*").in("variant_id", relevantIds)
-      : { data: [] };
-
-    // Get therapies
-    const { data: therapies } = await supabase.from("therapy_options").select("*").eq("case_id", caseId);
-
-    // Get biomarkers
-    const { data: biomarkers } = await supabase.from("biomarker_interpretations").select("*").eq("case_id", caseId);
-
-    // Get audit trail
-    const { data: audit } = await supabase.from("audit_logs").select("*").eq("entity_id", caseId).order("created_at", { ascending: false });
-
-    // Get job info
-    const { data: jobData } = await supabase.from("analysis_jobs").select("id, current_step, steps_log, status").eq("case_id", caseId).order("created_at", { ascending: false }).limit(1).single();
+    // Get variants and annotations for relevant ones
+    const [{ data: variants }, { data: annotations }] = relevantIds.length > 0
+      ? await Promise.all([
+          supabase.from("vcf_variants").select("id, chrom, pos, ref, alt, qual, filter").in("id", relevantIds),
+          supabase.from("variant_annotations").select("*").in("variant_id", relevantIds),
+        ])
+      : [{ data: [] }, { data: [] }];
 
     // Build enriched variant list
     const enrichedVariants = (classifications || []).map((c: any) => {
@@ -132,19 +128,20 @@ Deno.serve(async (req) => {
         classification: c.clinical_significance,
         confidence: c.confidence,
         prognostic_significance: c.prognostic_significance,
+        therapeutic_significance: c.therapeutic_significance,
         is_hotspot: annot?.is_hotspot || false,
         allele_frequency: annot?.allele_frequency,
         read_depth: annot?.read_depth,
         annotation_source: annot?.annotation_source,
         requires_review: c.requires_manual_review,
         rationale: c.rationale_json,
-        // ClinVar data
         clinvar_significance: annot?.clinvar_significance || null,
         clinvar_review_status: annot?.clinvar_review_status || null,
         clinvar_variation_id: annot?.clinvar_variation_id || null,
         clinvar_conditions: annot?.clinvar_conditions || null,
-        // Review status
         review_status: c.review_status || "pending",
+        review_notes: c.review_notes || null,
+        reviewed_at: c.reviewed_at || null,
       };
     });
 
@@ -153,7 +150,25 @@ Deno.serve(async (req) => {
       case_number: caseData.case_number,
       status: interp.status,
       sample_context: interp.sample_context,
-      pipeline_version: "2.0",
+      pipeline_version: "2.1",
+      // Case metadata for report
+      case_metadata: {
+        diagnosis: caseData.diagnosis,
+        sample_type: caseData.sample_type,
+        assembly: caseData.assembly,
+        regulatory_region: caseData.regulatory_region,
+        patient_age: caseData.patient_age,
+        patient_sex: caseData.patient_sex,
+        prior_treatment_lines: caseData.prior_treatment_lines,
+        transplant_eligibility: caseData.transplant_eligibility,
+        iss_stage: caseData.iss_stage,
+        riss_stage: caseData.riss_stage,
+        r2iss_stage: caseData.r2iss_stage,
+        creatinine: caseData.creatinine,
+        clinical_notes: caseData.clinical_notes,
+        file_name: caseData.file_name,
+        created_at: caseData.created_at,
+      },
       qc_summary: qcData || interp.qc_summary,
       molecular_summary: interp.molecular_summary,
       clinically_relevant_variants: enrichedVariants,
@@ -165,6 +180,7 @@ Deno.serve(async (req) => {
         clinical_implication: b.clinical_implication,
         requires_confirmation: b.requires_confirmation,
         confirmation_method: b.confirmation_method,
+        source: b.source,
       })),
       therapy_support: (therapies || []).map((t: any) => ({
         therapy: t.therapy_name,

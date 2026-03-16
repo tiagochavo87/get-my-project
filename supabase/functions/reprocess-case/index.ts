@@ -13,7 +13,7 @@ Deno.serve(async (req) => {
 
   try {
     const authHeader = req.headers.get("Authorization");
-    if (!authHeader) {
+    if (!authHeader?.startsWith("Bearer ")) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
@@ -21,12 +21,14 @@ Deno.serve(async (req) => {
     const anonKey = Deno.env.get("SUPABASE_ANON_KEY") || Deno.env.get("SUPABASE_PUBLISHABLE_KEY")!;
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
-    // Verify user
-    const anonClient = createClient(supabaseUrl, anonKey);
-    const { data: { user }, error: authErr } = await anonClient.auth.getUser(authHeader.replace("Bearer ", ""));
-    if (authErr || !user) {
+    // Verify user via getClaims
+    const anonClient = createClient(supabaseUrl, anonKey, { global: { headers: { Authorization: authHeader } } });
+    const token = authHeader.replace("Bearer ", "");
+    const { data: claimsData, error: authErr } = await anonClient.auth.getClaims(token);
+    if (authErr || !claimsData?.claims) {
       return new Response(JSON.stringify({ error: "Invalid token" }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
+    const userId = claimsData.claims.sub as string;
 
     const { case_id } = await req.json();
     if (!case_id) {
@@ -37,7 +39,7 @@ Deno.serve(async (req) => {
 
     // Verify ownership
     const { data: caseData } = await supabase.from("cases").select("id, user_id, file_path, status").eq("id", case_id).single();
-    if (!caseData || caseData.user_id !== user.id) {
+    if (!caseData || caseData.user_id !== userId) {
       return new Response(JSON.stringify({ error: "Case not found" }), { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
@@ -49,7 +51,7 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ error: "Analysis is currently running" }), { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
-    // Clear previous results (cascade will handle variant_annotations, variant_classifications)
+    // Clear previous results
     await Promise.all([
       supabase.from("vcf_variants").delete().eq("case_id", case_id),
       supabase.from("therapy_options").delete().eq("case_id", case_id),
@@ -71,14 +73,14 @@ Deno.serve(async (req) => {
 
     // Audit
     await supabase.from("audit_logs").insert({
-      actor_user_id: user.id,
+      actor_user_id: userId,
       entity_type: "case",
       entity_id: case_id,
       action: "reprocess_initiated",
       after_json: { previous_status: caseData.status },
     });
 
-    // Trigger re-analysis (fire-and-forget via fetch to avoid circular invoke)
+    // Trigger re-analysis (fire-and-forget)
     const analyzeUrl = `${supabaseUrl}/functions/v1/analyze-vcf`;
     fetch(analyzeUrl, {
       method: "POST",
