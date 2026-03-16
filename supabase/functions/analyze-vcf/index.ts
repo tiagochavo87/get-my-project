@@ -1699,7 +1699,7 @@ Deno.serve(async (req) => {
 
     // Audit log
     await supabase.from("audit_logs").insert({
-      actor_user_id: user.id,
+      actor_user_id: userId,
       entity_type: "case",
       entity_id: case_id,
       action: "analysis_completed",
