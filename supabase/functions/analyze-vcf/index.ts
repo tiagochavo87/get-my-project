@@ -488,6 +488,27 @@ function passesQualityFilter(v: ParsedVariant, config: FilterConfig): { passes: 
   // Don't filter on AF=0 (might not be present)
   if (af > 0 && af < config.min_af) reasons.push(`AF=${af}<${config.min_af}`);
 
+  // Population allele frequency filtering (germline only)
+  // Check gnomAD/ExAC/1000G population AF fields — exclude common polymorphisms
+  if (config.max_population_af < 1) {
+    const popAfKeys = [
+      "gnomAD_AF", "gnomADg_AF", "gnomADe_AF", "AF_popmax", "gnomAD_AF_popmax",
+      "ExAC_AF", "1000g2015aug_all", "ESP6500siv2_ALL",
+      // VEP CSQ sub-fields sometimes appear as INFO
+      "MAX_AF", "gnomADg_AF_NFE", "gnomADe_AF_NFE",
+    ];
+    for (const key of popAfKeys) {
+      const val = v.info[key];
+      if (val && val !== "." && val !== "") {
+        const popAf = parseFloat(val);
+        if (!isNaN(popAf) && popAf > config.max_population_af) {
+          reasons.push(`POP_AF(${key})=${popAf}>${config.max_population_af}`);
+          break; // One population AF filter is enough
+        }
+      }
+    }
+  }
+
   return { passes: reasons.length === 0, reasons };
 }
 
