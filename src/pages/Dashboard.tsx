@@ -66,6 +66,26 @@ export default function Dashboard() {
       setLoading(false);
     };
     fetchCases();
+
+    // Realtime subscription for case status updates
+    const channel = supabase
+      .channel('dashboard-cases')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'cases' },
+        (payload) => {
+          if (payload.eventType === 'INSERT') {
+            setCases(prev => [payload.new as unknown as DBCase, ...prev]);
+          } else if (payload.eventType === 'UPDATE') {
+            setCases(prev => prev.map(c => c.id === (payload.new as any).id ? payload.new as unknown as DBCase : c));
+          } else if (payload.eventType === 'DELETE') {
+            setCases(prev => prev.filter(c => c.id !== (payload.old as any).id));
+          }
+        }
+      )
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
   }, [user]);
 
   const filtered = cases.filter(c => {
