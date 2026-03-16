@@ -10,6 +10,7 @@ import Signup from "./pages/Signup";
 import Dashboard from "./pages/Dashboard";
 import NewCase from "./pages/NewCase";
 import CaseReport from "./pages/CaseReport";
+import ReviewCase from "./pages/ReviewCase";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -28,6 +29,7 @@ const App = () => (
             <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
             <Route path="/new-case" element={<ProtectedRoute><NewCase /></ProtectedRoute>} />
             <Route path="/case/:id" element={<ProtectedRoute><CaseReport /></ProtectedRoute>} />
+            <Route path="/case/:id/review" element={<ProtectedRoute><ReviewCase /></ProtectedRoute>} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </AuthProvider>

@@ -163,6 +163,8 @@ export type Database = {
           r2iss_stage: string | null
           regulatory_region: string
           relevant_variants: number
+          reviewed_at: string | null
+          reviewed_by: string | null
           riss_stage: string | null
           sample_type: string
           status: string
@@ -189,6 +191,8 @@ export type Database = {
           r2iss_stage?: string | null
           regulatory_region?: string
           relevant_variants?: number
+          reviewed_at?: string | null
+          reviewed_by?: string | null
           riss_stage?: string | null
           sample_type: string
           status?: string
@@ -215,6 +219,8 @@ export type Database = {
           r2iss_stage?: string | null
           regulatory_region?: string
           relevant_variants?: number
+          reviewed_at?: string | null
+          reviewed_by?: string | null
           riss_stage?: string | null
           sample_type?: string
           status?: string
@@ -614,6 +620,10 @@ export type Database = {
           prognostic_significance: string | null
           rationale_json: Json | null
           requires_manual_review: boolean | null
+          review_notes: string | null
+          review_status: string | null
+          reviewed_at: string | null
+          reviewed_by: string | null
           therapeutic_significance: string | null
           tier: number
           variant_id: string
@@ -626,6 +636,10 @@ export type Database = {
           prognostic_significance?: string | null
           rationale_json?: Json | null
           requires_manual_review?: boolean | null
+          review_notes?: string | null
+          review_status?: string | null
+          reviewed_at?: string | null
+          reviewed_by?: string | null
           therapeutic_significance?: string | null
           tier: number
           variant_id: string
@@ -638,6 +652,10 @@ export type Database = {
           prognostic_significance?: string | null
           rationale_json?: Json | null
           requires_manual_review?: boolean | null
+          review_notes?: string | null
+          review_status?: string | null
+          reviewed_at?: string | null
+          reviewed_by?: string | null
           therapeutic_significance?: string | null
           tier?: number
           variant_id?: string

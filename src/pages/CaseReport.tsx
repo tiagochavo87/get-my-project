@@ -2,7 +2,7 @@ import { useParams, Link } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 import { 
   ArrowLeft, Shield, AlertTriangle, CheckCircle2, 
-  Info, FileText, Activity, XCircle, Loader2, Beaker, Download, RefreshCw
+  Info, FileText, Activity, XCircle, Loader2, Beaker, Download, RefreshCw, ClipboardCheck
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -137,6 +137,14 @@ export default function CaseReport() {
             >
               <Download className="h-4 w-4 mr-1" />
               Download Report
+            </Button>
+          )}
+          {(data.status === 'review_required' || data.status === 'completed') && (
+            <Button variant="default" size="sm" asChild>
+              <Link to={`/case/${id}/review`}>
+                <ClipboardCheck className="h-4 w-4 mr-1" />
+                Review Variants
+              </Link>
             </Button>
           )}
           {(data.status === 'failed' || data.status === 'review_required' || data.status === 'completed') && (
