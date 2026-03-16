@@ -2,7 +2,7 @@ import { useParams, Link } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 import { 
   ArrowLeft, Shield, AlertTriangle, CheckCircle2, 
-  Info, FileText, Activity, XCircle, Loader2, Beaker
+  Info, FileText, Activity, XCircle, Loader2, Beaker, Download
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
