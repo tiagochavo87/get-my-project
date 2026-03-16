@@ -236,7 +236,7 @@ export default function NewCase() {
                     <Input type="number" placeholder="Years" min={0} max={120} value={patientAge} onChange={e => setPatientAge(e.target.value)} />
                   </div>
                   <div className="space-y-1.5">
-                    <Label className="text-xs">Patient Sex *</Label>
+                    <Label className="text-xs">Patient Sex</Label>
                     <Select value={patientSex} onValueChange={setPatientSex}>
                       <SelectTrigger><SelectValue placeholder="Select..." /></SelectTrigger>
                       <SelectContent>
