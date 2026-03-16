@@ -542,6 +542,10 @@ export type Database = {
           allele_frequency: number | null
           annotation_source: string | null
           annotation_version: string | null
+          clinvar_conditions: string[] | null
+          clinvar_review_status: string | null
+          clinvar_significance: string | null
+          clinvar_variation_id: string | null
           consequence: string | null
           created_at: string
           gene_symbol: string | null
@@ -557,6 +561,10 @@ export type Database = {
           allele_frequency?: number | null
           annotation_source?: string | null
           annotation_version?: string | null
+          clinvar_conditions?: string[] | null
+          clinvar_review_status?: string | null
+          clinvar_significance?: string | null
+          clinvar_variation_id?: string | null
           consequence?: string | null
           created_at?: string
           gene_symbol?: string | null
@@ -572,6 +580,10 @@ export type Database = {
           allele_frequency?: number | null
           annotation_source?: string | null
           annotation_version?: string | null
+          clinvar_conditions?: string[] | null
+          clinvar_review_status?: string | null
+          clinvar_significance?: string | null
+          clinvar_variation_id?: string | null
           consequence?: string | null
           created_at?: string
           gene_symbol?: string | null

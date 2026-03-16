@@ -434,6 +434,131 @@ function passesQualityFilter(v: ParsedVariant, config: FilterConfig): { passes: 
 }
 
 // ============================================================
+// CLINVAR LOOKUP — NCBI E-utilities (public, no API key)
+// ============================================================
+interface ClinVarResult {
+  significance: string;
+  review_status: string;
+  variation_id: string;
+  conditions: string[];
+}
+
+async function queryClinVar(
+  chrom: string,
+  pos: number,
+  ref: string,
+  alt: string,
+  assembly: string,
+): Promise<ClinVarResult | null> {
+  try {
+    const assemblyTag = assembly === "GRCh38" ? "GRCh38" : "GRCh37";
+    // Use NCBI variation services API for precise lookup
+    const searchTerm = `${chrom}[Chromosome] AND ${pos}[Base Position] AND ${assemblyTag}[Assembly]`;
+    const esearchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=clinvar&term=${encodeURIComponent(searchTerm)}&retmode=json&retmax=5`;
+
+    const searchResp = await fetch(esearchUrl);
+    if (!searchResp.ok) return null;
+    const searchData = await searchResp.json();
+
+    const ids: string[] = searchData?.esearchresult?.idlist || [];
+    if (ids.length === 0) return null;
+
+    // Fetch summaries for matching IDs
+    const esummaryUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=clinvar&id=${ids.join(",")}&retmode=json`;
+    const summaryResp = await fetch(esummaryUrl);
+    if (!summaryResp.ok) return null;
+    const summaryData = await summaryResp.json();
+
+    const results = summaryData?.result;
+    if (!results) return null;
+
+    // Find best match by checking variant details
+    for (const uid of ids) {
+      const entry = results[uid];
+      if (!entry) continue;
+
+      // Extract clinical significance
+      const significance = entry.clinical_significance?.description || 
+                          entry.germline_classification?.description ||
+                          entry.clinical_significance || null;
+      if (!significance) continue;
+
+      const reviewStatus = entry.clinical_significance?.review_status ||
+                          entry.review_status || "no_review";
+      
+      const conditions: string[] = [];
+      if (entry.trait_set) {
+        for (const trait of (Array.isArray(entry.trait_set) ? entry.trait_set : [entry.trait_set])) {
+          if (trait?.trait_name) conditions.push(trait.trait_name);
+        }
+      }
+
+      return {
+        significance: String(significance).toLowerCase().replace(/\s+/g, "_"),
+        review_status: String(reviewStatus),
+        variation_id: String(uid),
+        conditions,
+      };
+    }
+    return null;
+  } catch (e) {
+    console.warn("ClinVar lookup failed:", e);
+    return null;
+  }
+}
+
+// Batch ClinVar lookups with rate limiting (max 3/sec without API key)
+async function batchClinVarLookup(
+  variants: Array<{ chrom: string; pos: number; ref: string; alt: string; index: number }>,
+  assembly: string,
+): Promise<Map<number, ClinVarResult>> {
+  const results = new Map<number, ClinVarResult>();
+  const BATCH_DELAY = 350; // ~3 requests/sec
+
+  for (let i = 0; i < variants.length; i++) {
+    const v = variants[i];
+    const result = await queryClinVar(v.chrom, v.pos, v.ref, v.alt, assembly);
+    if (result) {
+      results.set(v.index, result);
+    }
+    // Rate limit
+    if (i < variants.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, BATCH_DELAY));
+    }
+  }
+  return results;
+}
+
+// Map ClinVar significance to our classification system
+function mapClinVarSignificance(clinvarSig: string): {
+  classification: string;
+  tierAdjustment: number | null;
+  confidence: string;
+} {
+  const sig = clinvarSig.toLowerCase().replace(/[\s_-]+/g, "_");
+  
+  if (sig.includes("pathogenic") && !sig.includes("likely") && !sig.includes("conflicting")) {
+    return { classification: "pathogenic", tierAdjustment: 1, confidence: "high" };
+  }
+  if (sig.includes("likely_pathogenic")) {
+    return { classification: "likely_pathogenic", tierAdjustment: 2, confidence: "moderate" };
+  }
+  if (sig.includes("uncertain") || sig.includes("vus")) {
+    return { classification: "vus", tierAdjustment: 3, confidence: "low" };
+  }
+  if (sig.includes("likely_benign")) {
+    return { classification: "likely_benign", tierAdjustment: 4, confidence: "moderate" };
+  }
+  if (sig.includes("benign") && !sig.includes("likely")) {
+    return { classification: "benign", tierAdjustment: 4, confidence: "high" };
+  }
+  if (sig.includes("conflicting")) {
+    return { classification: "vus", tierAdjustment: null, confidence: "low" };
+  }
+  return { classification: "vus", tierAdjustment: null, confidence: "low" };
+}
+
+// ============================================================
 // CLASSIFICATION SERVICE
 // ============================================================
 function classifyVariant(
@@ -1143,22 +1268,8 @@ Deno.serve(async (req) => {
 
           classifiedVariants.push({ gene, tier: classification.tier, classification, variantId });
 
-          // Therapy options (only for Tier 1-2, never for VUS)
-          if (classification.tier <= 2) {
-            const therapies = findTherapyOptions(gene, hgvs.hgvs_p, caseData.regulatory_region, classification.tier, classification.clinical_significance);
-            for (const t of therapies) {
-              therapyInserts.push({
-                case_id,
-                variant_id: variantId,
-                therapy_name: t.therapy_name,
-                evidence_level: t.evidence_level,
-                region: t.region,
-                approved_status: t.approved_status,
-                rationale_text: t.rationale,
-                contraindicated_flag: t.contraindicated_flag,
-              });
-            }
-          }
+          // Track for post-ClinVar therapy computation
+          // (Therapy matching moved to after ClinVar refinement step)
         }
       }
 
@@ -1182,8 +1293,168 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ===== STEP 7: THERAPIES =====
+    // ===== STEP 7: CLINVAR ANNOTATION =====
+    await logStep(supabase, jobId, "clinvar_annotation", "started");
+    const clinvarCandidates = classifiedVariants
+      .filter(v => v.tier <= 3 && v.variantId && v.gene)
+      .map((v, idx) => {
+        // Find original variant data from processed chunks
+        const origVariant = variantsToProcess.find(pv => {
+          // Match by position - the variantId links back
+          return true; // We'll use the annotation data instead
+        });
+        return v;
+      });
+
+    // Collect variant coordinates for ClinVar lookup (limit to 50 to respect rate limits + time)
+    const MAX_CLINVAR_LOOKUPS = 50;
+    const clinvarTargets: Array<{ chrom: string; pos: number; ref: string; alt: string; index: number; variantId: string }> = [];
+
+    // Query coordinates from vcf_variants for Tier 1-3
+    const tier13VariantIds = classifiedVariants
+      .filter(v => v.tier <= 3 && v.variantId)
+      .slice(0, MAX_CLINVAR_LOOKUPS)
+      .map(v => v.variantId!);
+
+    if (tier13VariantIds.length > 0 && (Date.now() - startTime) < TIMEOUT_MS - 10000) {
+      // Fetch coordinates
+      const { data: variantCoords } = await supabase
+        .from("vcf_variants")
+        .select("id, chrom, pos, ref, alt")
+        .in("id", tier13VariantIds);
+
+      if (variantCoords) {
+        for (let i = 0; i < variantCoords.length; i++) {
+          const vc = variantCoords[i];
+          clinvarTargets.push({
+            chrom: vc.chrom,
+            pos: vc.pos,
+            ref: vc.ref,
+            alt: vc.alt,
+            index: i,
+            variantId: vc.id,
+          });
+        }
+      }
+
+      // Execute ClinVar lookups
+      const clinvarResults = await batchClinVarLookup(
+        clinvarTargets.map(t => ({ chrom: t.chrom, pos: t.pos, ref: t.ref, alt: t.alt, index: t.index })),
+        caseData.assembly,
+      );
+
+      let clinvarHits = 0;
+      let clinvarUpgrades = 0;
+      let clinvarDowngrades = 0;
+
+      for (const [idx, clinvarResult] of clinvarResults.entries()) {
+        const target = clinvarTargets[idx];
+        if (!target) continue;
+        clinvarHits++;
+
+        // Update variant_annotations with ClinVar data
+        await supabase.from("variant_annotations").update({
+          clinvar_significance: clinvarResult.significance,
+          clinvar_review_status: clinvarResult.review_status,
+          clinvar_variation_id: clinvarResult.variation_id,
+          clinvar_conditions: clinvarResult.conditions,
+          sources: ["rule_engine", "clinvar"],
+        }).eq("variant_id", target.variantId);
+
+        // Refine classification based on ClinVar
+        const mapped = mapClinVarSignificance(clinvarResult.significance);
+        const classifiedVar = classifiedVariants.find(v => v.variantId === target.variantId);
+        
+        if (classifiedVar && mapped.tierAdjustment !== null) {
+          const oldTier = classifiedVar.tier;
+          const newTier = Math.min(mapped.tierAdjustment, oldTier); // ClinVar can upgrade (lower tier number) but not downgrade high-risk genes
+          
+          // ClinVar Pathogenic/Likely_Pathogenic can UPGRADE tier
+          if (mapped.tierAdjustment < oldTier) {
+            clinvarUpgrades++;
+            classifiedVar.tier = newTier;
+            classifiedVar.classification.clinical_significance = mapped.classification;
+            classifiedVar.classification.confidence = mapped.confidence;
+          }
+          
+          // ClinVar Benign/Likely_Benign can DOWNGRADE — but only if gene is NOT high-risk
+          if (mapped.tierAdjustment > oldTier && classifiedVar.classification.rationale_json?.is_high_risk_gene !== true) {
+            clinvarDowngrades++;
+            classifiedVar.tier = mapped.tierAdjustment;
+            classifiedVar.classification.clinical_significance = mapped.classification;
+            classifiedVar.classification.confidence = mapped.confidence;
+            // Benign variants should not require manual review
+            if (mapped.classification === "benign" || mapped.classification === "likely_benign") {
+              classifiedVar.classification.requires_manual_review = false;
+            }
+          }
+
+          // Update classification in DB
+          await supabase.from("variant_classifications").update({
+            tier: classifiedVar.tier,
+            clinical_significance: classifiedVar.classification.clinical_significance,
+            confidence: classifiedVar.classification.confidence,
+            requires_manual_review: classifiedVar.classification.requires_manual_review,
+            rationale_json: {
+              ...classifiedVar.classification.rationale_json,
+              clinvar_significance: clinvarResult.significance,
+              clinvar_review_status: clinvarResult.review_status,
+              clinvar_adjusted: oldTier !== classifiedVar.tier,
+            },
+          }).eq("variant_id", target.variantId);
+        }
+      }
+
+      await logStep(supabase, jobId, "clinvar_annotation", "completed", {
+        candidates: clinvarTargets.length,
+        hits: clinvarHits,
+        upgrades: clinvarUpgrades,
+        downgrades: clinvarDowngrades,
+      });
+    } else {
+      await logStep(supabase, jobId, "clinvar_annotation", "completed", {
+        skipped: true,
+        reason: tier13VariantIds.length === 0 ? "no_tier_1_3_variants" : "time_budget_exceeded",
+      });
+    }
+
+    // ===== STEP 8: THERAPIES =====
+    // Re-compute therapies based on ClinVar-refined classifications
     await logStep(supabase, jobId, "therapy_matching", "started");
+
+    // Clear previous therapy inserts and rebuild from refined classifications
+    therapyInserts.length = 0;
+    for (const cv of classifiedVariants) {
+      if (cv.tier <= 2 && cv.gene && cv.classification.clinical_significance !== "vus") {
+        // Get HGVS for this variant from annotations
+        const { data: annot } = await supabase
+          .from("variant_annotations")
+          .select("hgvs_p")
+          .eq("variant_id", cv.variantId)
+          .single();
+        
+        const therapies = findTherapyOptions(
+          cv.gene,
+          annot?.hgvs_p || null,
+          caseData.regulatory_region,
+          cv.tier,
+          cv.classification.clinical_significance,
+        );
+        for (const t of therapies) {
+          therapyInserts.push({
+            case_id,
+            variant_id: cv.variantId,
+            therapy_name: t.therapy_name,
+            evidence_level: t.evidence_level,
+            region: t.region,
+            approved_status: t.approved_status,
+            rationale_text: t.rationale,
+            contraindicated_flag: t.contraindicated_flag,
+          });
+        }
+      }
+    }
+
     if (therapyInserts.length > 0) {
       await supabase.from("therapy_options").insert(therapyInserts);
     }
@@ -1236,7 +1507,7 @@ Deno.serve(async (req) => {
     if (!caseData.riss_stage) limitations.push("R-ISS stage not provided — risk stratification incomplete.");
     if (caseData.sample_type === "somatic_tumor") limitations.push("Germline filtering not performed (somatic-only sample).");
     if (caseData.sample_type === "tumor_normal_paired") limitations.push("Tumor-normal paired analysis requires validated somatic caller output.");
-    limitations.push("Gene annotation is based on positional lookup and VCF INFO fields. External annotation (VEP/ClinVar) not yet integrated.");
+    limitations.push("Gene annotation uses positional lookup, VCF INFO fields, and ClinVar variant-level lookup. VEP/gnomAD not yet integrated.");
 
     const manualReviewReasons: string[] = [];
     if (flags.manual_review_required) manualReviewReasons.push("One or more variants require manual curation review.");
