@@ -1406,7 +1406,7 @@ Deno.serve(async (req) => {
     }
     const userId = claimsData.claims.sub as string;
 
-    const { case_id } = await req.json();
+    const { case_id, manual_variants, sv_file_path } = await req.json();
     if (!case_id) {
       return new Response(JSON.stringify({ error: "case_id required" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
