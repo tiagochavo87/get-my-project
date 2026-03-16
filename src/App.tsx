@@ -10,6 +10,7 @@ import Signup from "./pages/Signup";
 import Dashboard from "./pages/Dashboard";
 import NewCase from "./pages/NewCase";
 import CaseReport from "./pages/CaseReport";
+import ReviewCase from "./pages/ReviewCase";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
