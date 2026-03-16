@@ -382,6 +382,26 @@ function extractFullAnnotation(v: ParsedVariant, geneRefs: GeneRef[]): Extracted
     }
   }
 
+  // Local consequence inference if still missing
+  if (!result.consequence) {
+    result.consequence = inferConsequenceLocally(v.ref, v.alt, result.gene, result.annotation_source !== "none");
+    if (result.consequence && result.annotation_source === "none") {
+      result.annotation_source = "local_inference_v1";
+    } else if (result.consequence) {
+      result.annotation_source += "+local_consequence";
+    }
+  }
+
+  // Local predicted effect if missing
+  if (!result.predicted_effect && result.consequence) {
+    result.predicted_effect = mapConsequenceToImpact(result.consequence);
+  }
+
+  // Local HGVS genomic notation if missing
+  if (!result.hgvs_c) {
+    result.hgvs_c = generateLocalHGVSg(v.chrom, v.pos, v.ref, v.alt);
+  }
+
   return result;
 }
 
