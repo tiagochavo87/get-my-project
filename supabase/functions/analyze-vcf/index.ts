@@ -1642,7 +1642,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ===== STEP 8: THERAPIES =====
+    // ===== STEP 9: THERAPIES =====
     // Re-compute therapies based on ClinVar-refined classifications
     await logStep(supabase, jobId, "therapy_matching", "started");
 
