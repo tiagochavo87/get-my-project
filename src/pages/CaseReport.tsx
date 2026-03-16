@@ -389,6 +389,15 @@ export default function CaseReport() {
                               <td className="px-3 py-2.5 hidden md:table-cell capitalize text-muted-foreground">
                                 {v.classification?.replace(/_/g, ' ') || '—'}
                               </td>
+                              <td className="px-3 py-2.5 hidden md:table-cell">
+                                {v.clinvar_significance ? (
+                                  <span className="clinical-badge status-badge-processing text-[10px]">
+                                    {v.clinvar_significance.replace(/_/g, ' ')}
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] text-muted-foreground">—</span>
+                                )}
+                              </td>
                               <td className="px-3 py-2.5 hidden md:table-cell capitalize text-muted-foreground">
                                 {v.confidence || '—'}
                               </td>
