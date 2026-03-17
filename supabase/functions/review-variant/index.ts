@@ -168,33 +168,38 @@ Deno.serve(async (req) => {
         });
       }
 
-      const { data: variants } = await supabase
-        .from("vcf_variants")
-        .select("id, chrom, pos, ref, alt, qual, filter")
-        .eq("case_id", case_id);
+      // Query classifications with joined variant data — avoids loading all 29k+ variants
+      const { data: classifications } = await supabase
+        .from("variant_classifications")
+        .select("*, vcf_variants!inner(id, chrom, pos, ref, alt, qual, filter, case_id)")
+        .eq("vcf_variants.case_id", case_id)
+        .lte("tier", 3);
 
-      if (!variants || variants.length === 0) {
+      if (!classifications || classifications.length === 0) {
         return new Response(
           JSON.stringify({ case: caseData, variants: [], summary: { total: 0, pending: 0, approved: 0, rejected: 0 } }),
           { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
 
-      const variantIds = variants.map((v: any) => v.id);
-      const [{ data: annotations }, { data: classifications }] = await Promise.all([
-        supabase.from("variant_annotations").select("*").in("variant_id", variantIds),
-        supabase.from("variant_classifications").select("*").in("variant_id", variantIds).lte("tier", 3),
-      ]);
+      // Get annotations only for classified variants
+      const classifiedVariantIds = classifications.map((c: any) => c.variant_id);
+      const { data: annotations } = await supabase
+        .from("variant_annotations")
+        .select("*")
+        .in("variant_id", classifiedVariantIds);
 
-      const classifiedVariantIds = new Set((classifications || []).map((c: any) => c.variant_id));
-
-      const reviewableVariants = variants
-        .filter((v: any) => classifiedVariantIds.has(v.id))
-        .map((v: any) => {
-          const annot = (annotations || []).find((a: any) => a.variant_id === v.id);
-          const classif = (classifications || []).find((c: any) => c.variant_id === v.id);
+      const reviewableVariants = classifications
+        .map((classif: any) => {
+          const v = classif.vcf_variants;
+          const annot = (annotations || []).find((a: any) => a.variant_id === classif.variant_id);
           return {
-            ...v,
+            id: v.id,
+            chrom: v.chrom,
+            pos: v.pos,
+            ref: v.ref,
+            alt: v.alt,
+            qual: v.qual,
             gene: annot?.gene_symbol || null,
             consequence: annot?.consequence || null,
             hgvs_c: annot?.hgvs_c || null,
@@ -204,15 +209,15 @@ Deno.serve(async (req) => {
             is_hotspot: annot?.is_hotspot || false,
             clinvar_significance: annot?.clinvar_significance || null,
             clinvar_review_status: annot?.clinvar_review_status || null,
-            tier: classif?.tier || null,
-            confidence: classif?.confidence || null,
-            clinical_significance: classif?.clinical_significance || null,
-            prognostic_significance: classif?.prognostic_significance || null,
-            requires_manual_review: classif?.requires_manual_review || false,
-            review_status: classif?.review_status || "pending",
-            review_notes: classif?.review_notes || null,
-            reviewed_at: classif?.reviewed_at || null,
-            rationale: classif?.rationale_json || null,
+            tier: classif.tier,
+            confidence: classif.confidence || null,
+            clinical_significance: classif.clinical_significance || null,
+            prognostic_significance: classif.prognostic_significance || null,
+            requires_manual_review: classif.requires_manual_review || false,
+            review_status: classif.review_status || "pending",
+            review_notes: classif.review_notes || null,
+            reviewed_at: classif.reviewed_at || null,
+            rationale: classif.rationale_json || null,
           };
         })
         .sort((a: any, b: any) => (a.tier || 99) - (b.tier || 99));
