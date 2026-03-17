@@ -116,9 +116,9 @@ export default function CaseReport() {
                 variant="outline"
                 size="sm"
                 onClick={async () => {
-                  const projectId = import.meta.env.VITE_SUPABASE_PROJECT_ID;
+                  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
                   const { data: session } = await (await import('@/integrations/supabase/client')).supabase.auth.getSession();
-                  const url = `https://${projectId}.supabase.co/functions/v1/generate-report?case_id=${id}&format=html`;
+                  const url = `${supabaseUrl}/functions/v1/generate-report?case_id=${id}&format=html`;
                   const resp = await fetch(url, {
                     headers: {
                       Authorization: `Bearer ${session.session?.access_token}`,
