@@ -40,10 +40,10 @@ export default function CaseReport() {
     if (!id || !user) return;
     const fetchInterpretation = async () => {
       try {
-        const projectId = import.meta.env.VITE_SUPABASE_PROJECT_ID;
+        const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
         const { data: session } = await (await import('@/integrations/supabase/client')).supabase.auth.getSession();
         const resp = await fetch(
-          `https://${projectId}.supabase.co/functions/v1/get-interpretation?case_id=${id}`,
+          `${supabaseUrl}/functions/v1/get-interpretation?case_id=${id}`,
           {
             headers: {
               Authorization: `Bearer ${session.session?.access_token}`,
