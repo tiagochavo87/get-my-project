@@ -1515,13 +1515,75 @@ Deno.serve(async (req) => {
       }
       await logStep(supabase, jobId, "downloading", "completed");
 
-      // STEP 2: DECOMPRESS
+      // STEP 2: DECOMPRESS — chunked streaming to avoid memory/timeout issues
       await logStep(supabase, jobId, "decompressing", "started");
       let vcfContent: string;
+      const DECOMPRESS_TIMEOUT_MS = 30_000; // 30s safety limit
+      const MAX_DECOMPRESSED_BYTES = 500 * 1024 * 1024; // 500MB hard cap
+
       if (caseData.file_name.endsWith(".gz")) {
+        // Stream-decompress in chunks instead of buffering everything at once
         const ds = new DecompressionStream("gzip");
-        const decompressed = fileData.stream().pipeThrough(ds);
-        vcfContent = await new Response(decompressed).text();
+        const decompressedStream = fileData.stream().pipeThrough(ds);
+        const reader = decompressedStream.getReader();
+        const decoder = new TextDecoder();
+        const chunks: string[] = [];
+        let totalBytes = 0;
+        const decompressStart = Date.now();
+
+        try {
+          while (true) {
+            // Check timeout between chunks
+            if (Date.now() - decompressStart > DECOMPRESS_TIMEOUT_MS) {
+              reader.cancel();
+              throw new Error(`Decompression timeout after ${DECOMPRESS_TIMEOUT_MS / 1000}s. File may be too large for real-time processing.`);
+            }
+
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            totalBytes += value.byteLength;
+            if (totalBytes > MAX_DECOMPRESSED_BYTES) {
+              reader.cancel();
+              throw new Error(`Decompressed size exceeds ${MAX_DECOMPRESSED_BYTES / 1024 / 1024}MB limit.`);
+            }
+
+            chunks.push(decoder.decode(value, { stream: true }));
+          }
+          // Flush decoder
+          chunks.push(decoder.decode());
+          vcfContent = chunks.join("");
+        } catch (decompErr) {
+          // If it's our own timeout/size error, propagate; otherwise wrap
+          const msg = decompErr instanceof Error ? decompErr.message : String(decompErr);
+          if (msg.includes("timeout") || msg.includes("limit")) {
+            await logStep(supabase, jobId, "decompressing", "failed", { error: msg, bytes_read: totalBytes, elapsed_ms: Date.now() - decompressStart });
+            await supabase.from("analysis_jobs").update({ status: "failed", error_message: msg, completed_at: new Date().toISOString() }).eq("id", jobId);
+            await supabase.from("cases").update({ status: "failed" }).eq("id", case_id);
+            return new Response(JSON.stringify({ error: msg }), { status: 422, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+          }
+          // For "failed to write whole buffer" and similar stream errors, retry with ArrayBuffer fallback
+          console.warn("Stream decompression failed, trying ArrayBuffer fallback:", msg);
+          try {
+            const rawBytes = new Uint8Array(await fileData.arrayBuffer());
+            const dsFallback = new DecompressionStream("gzip");
+            const writer = dsFallback.writable.getWriter();
+            // Write in 64KB chunks to avoid buffer overflow
+            const CHUNK_SIZE = 64 * 1024;
+            for (let offset = 0; offset < rawBytes.length; offset += CHUNK_SIZE) {
+              const slice = rawBytes.subarray(offset, Math.min(offset + CHUNK_SIZE, rawBytes.length));
+              await writer.write(slice);
+            }
+            await writer.close();
+            vcfContent = await new Response(dsFallback.readable).text();
+          } catch (fallbackErr) {
+            const fallbackMsg = `Decompression failed: ${fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)}`;
+            await logStep(supabase, jobId, "decompressing", "failed", { error: fallbackMsg });
+            await supabase.from("analysis_jobs").update({ status: "failed", error_message: fallbackMsg, completed_at: new Date().toISOString() }).eq("id", jobId);
+            await supabase.from("cases").update({ status: "failed" }).eq("id", case_id);
+            return new Response(JSON.stringify({ error: fallbackMsg }), { status: 422, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+          }
+        }
       } else {
         vcfContent = await fileData.text();
       }
