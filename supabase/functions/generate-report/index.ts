@@ -28,14 +28,13 @@ Deno.serve(async (req) => {
     const anonKey = Deno.env.get("SUPABASE_ANON_KEY") || Deno.env.get("SUPABASE_PUBLISHABLE_KEY")!;
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
-    // Verify user via getClaims
+    // Verify user via getUser
     const anonClient = createClient(supabaseUrl, anonKey, { global: { headers: { Authorization: authHeader } } });
-    const token = authHeader.replace("Bearer ", "");
-    const { data: claimsData, error: authErr } = await anonClient.auth.getClaims(token);
-    if (authErr || !claimsData?.claims) {
+    const { data: { user }, error: authErr } = await anonClient.auth.getUser();
+    if (authErr || !user) {
       return new Response(JSON.stringify({ error: "Invalid token" }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
-    const userId = claimsData.claims.sub as string;
+    const userId = user.id;
 
     const supabase = createClient(supabaseUrl, serviceKey);
 
