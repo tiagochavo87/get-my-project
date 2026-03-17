@@ -31,9 +31,9 @@ function useAdminApi() {
   const call = useCallback(async (action: string, extra: Record<string, any> = {}) => {
     const { supabase } = await import('@/integrations/supabase/client');
     const { data: session } = await supabase.auth.getSession();
-    const projectId = import.meta.env.VITE_SUPABASE_PROJECT_ID;
+    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
     const resp = await fetch(
-      `https://${projectId}.supabase.co/functions/v1/admin-panel`,
+      `${supabaseUrl}/functions/v1/admin-panel`,
       {
         method: 'POST',
         headers: {
